@@ -18,23 +18,33 @@ fn main() {
                 .unwrap_or_else(|error| fatal(format!("cannot read {}: {error}", manifest_path.display())));
             let manifest = mcp_cli::manifest::parse_manifest(&contents)
                 .unwrap_or_else(|error| fatal(format!("invalid manifest: {error}")));
-            let mcp_cli::manifest::Runtime::Python { python } = manifest.runtime else {
-                fatal("install currently supports Python MCPs only".to_owned());
-            };
-            if std::process::Command::new("uv")
-                .arg("--version")
-                .status()
-                .map(|status| !status.success())
-                .unwrap_or(true)
-            {
-                fatal("uv is required to install Python MCPs".to_owned());
-            }
             let state_home = mcp_cli::paths::data_home_from(
                 std::env::var_os("MCPCTL_HOME").map(std::path::PathBuf::from),
             )
             .unwrap_or_else(|error| fatal(error));
             let package_name = manifest.name.clone();
             let package_version = manifest.version.clone();
+            if matches!(manifest.runtime, mcp_cli::manifest::Runtime::Binary) {
+                if manifest.install.entrypoint.is_empty() || manifest.install.entrypoint.contains(['/', '\\']) {
+                    fatal("binary entrypoint must be a filename without path separators".to_owned());
+                }
+                let binary = std::path::Path::new(project).join(&manifest.install.entrypoint);
+                if !binary.is_file() { fatal(format!("Python MCPs and binary MCPs require an entrypoint: {}", binary.display())); }
+                #[cfg(unix)]
+                if !std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&binary).unwrap_or_else(|error| fatal(error.to_string())).permissions()).eq(&0) {
+                    let mode = std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&binary).unwrap_or_else(|error| fatal(error.to_string())).permissions());
+                    if mode & 0o111 == 0 { fatal("binary entrypoint is not executable".to_owned()); }
+                }
+                let root = state_home.join("packages").join(&package_name).join(&package_version);
+                let runtime_bin = root.join("runtime/bin");
+                std::fs::create_dir_all(&runtime_bin).unwrap_or_else(|error| fatal(format!("cannot create binary runtime: {error}")));
+                copy_source_snapshot(std::path::Path::new(project), &root.join("source")).unwrap_or_else(|error| fatal(format!("cannot snapshot source: {error}")));
+                std::fs::copy(&binary, runtime_bin.join(&manifest.install.entrypoint)).unwrap_or_else(|error| fatal(format!("cannot copy binary: {error}")));
+                if let Err(error) = record_install(&state_home, &package_name, &package_version, "binary") { let _ = std::fs::remove_dir_all(&root); fatal(format!("cannot record installation: {error}")); }
+                return;
+            }
+            let mcp_cli::manifest::Runtime::Python { python } = manifest.runtime else { unreachable!() };
+            if std::process::Command::new("uv").arg("--version").status().map(|status| !status.success()).unwrap_or(true) { fatal("uv is required to install Python MCPs".to_owned()); }
             let destination = state_home
                 .join("packages")
                 .join(&package_name)
@@ -51,7 +61,7 @@ fn main() {
                 let _ = std::fs::remove_dir_all(destination.parent().unwrap());
                 fatal("uv failed to create the isolated runtime".to_owned());
             }
-            if let Err(error) = record_install(&state_home, &package_name, &package_version) {
+            if let Err(error) = record_install(&state_home, &package_name, &package_version, "python") {
                 let _ = std::fs::remove_dir_all(destination.parent().unwrap());
                 fatal(format!("cannot record installation: {error}"));
             }
@@ -60,11 +70,67 @@ fn main() {
         [command] if command == "list" => list_packages(),
         [command, package] if command == "info" => info_package(package),
         [command, package] if command == "uninstall" => uninstall_package(package),
+        [command, package] if command == "use" => use_package(package),
+        [command, package, flag, source] if command == "update" && flag == "--source" => update_package(package, source),
+        [command] if command == "doctor" => doctor(),
         _ => {
             eprintln!("unrecognized argument");
             std::process::exit(2);
         }
     }
+}
+
+fn update_package(name: &str, source: &str) {
+    let manifest_path = std::path::Path::new(source).join("mcpctl.toml");
+    let manifest = std::fs::read_to_string(&manifest_path)
+        .map_err(|error| error.to_string())
+        .and_then(|contents| mcp_cli::manifest::parse_manifest(&contents))
+        .unwrap_or_else(|error| fatal(format!("cannot read update source: {error}")));
+    if manifest.name != name { fatal(format!("update source package {} does not match {name}", manifest.name)); }
+    let status = std::process::Command::new(std::env::current_exe().unwrap_or_else(|error| fatal(error.to_string())))
+        .args(["install", source]).status().unwrap_or_else(|error| fatal(format!("cannot install update: {error}")));
+    if !status.success() { std::process::exit(status.code().unwrap_or(1)); }
+    use_package(&format!("{name}@{}", manifest.version));
+}
+
+fn doctor() {
+    let state_home = match mcp_cli::paths::data_home_from(std::env::var_os("MCPCTL_HOME").map(std::path::PathBuf::from)) { Ok(path) => path, Err(error) => fatal(error) };
+    let registry_path = state_home.join("registry.json");
+    let registry = match mcp_cli::registry::load_registry(&registry_path) { Ok(registry) => registry, Err(error) => { println!("ERROR registry: {error}"); std::process::exit(1) } };
+    let mut errors = 0;
+    for (name, package) in &registry.packages {
+        if let Some(active) = &package.active_version {
+            if !package.versions.iter().any(|version| &version.version == active) { println!("ERROR {name}: active version {active} is not installed"); errors += 1; }
+        }
+        for version in &package.versions {
+            let root = state_home.join("packages").join(name).join(&version.version);
+            let manifest_path = root.join("source/mcpctl.toml");
+            let manifest = std::fs::read_to_string(&manifest_path).ok().and_then(|contents| mcp_cli::manifest::parse_manifest(&contents).ok());
+            let Some(manifest) = manifest else { println!("ERROR {name}@{}: missing or invalid manifest", version.version); errors += 1; continue };
+            let entrypoint = match manifest.runtime {
+                mcp_cli::manifest::Runtime::Python { .. } => root.join("runtime/bin/python"),
+                mcp_cli::manifest::Runtime::Binary => root.join("runtime/bin").join(manifest.install.entrypoint),
+            };
+            if !entrypoint.is_file() { println!("ERROR {name}@{}: missing entrypoint", version.version); errors += 1; continue }
+            #[cfg(unix)]
+            if std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&entrypoint).unwrap().permissions()) & 0o111 == 0 { println!("ERROR {name}@{}: entrypoint is not executable", version.version); errors += 1; }
+        }
+    }
+    if errors == 0 { println!("OK: registry and installed entrypoints are healthy"); } else { std::process::exit(1); }
+}
+
+fn use_package(selector: &str) {
+    let Some((name, version)) = selector.split_once('@') else { fatal("use requires name@version".to_owned()) };
+    if name.is_empty() || version.is_empty() || name.contains(['/', '\\']) || version.contains(['/', '\\']) {
+        fatal("invalid package selector".to_owned());
+    }
+    let state_home = mcp_cli::paths::data_home_from(std::env::var_os("MCPCTL_HOME").map(std::path::PathBuf::from)).unwrap_or_else(|error| fatal(error));
+    let registry_path = state_home.join("registry.json");
+    let mut registry = mcp_cli::registry::load_registry(&registry_path).unwrap_or_else(|error| fatal(format!("cannot read registry: {error}")));
+    let package = registry.packages.get_mut(name).unwrap_or_else(|| fatal(format!("{name} is not installed")));
+    if !package.versions.iter().any(|installed| installed.version == version) { fatal(format!("{name}@{version} is not installed")); }
+    package.active_version = Some(version.to_owned());
+    mcp_cli::registry::save_registry(&registry_path, &registry).unwrap_or_else(|error| fatal(error));
 }
 
 fn uninstall_package(selector: &str) {
@@ -178,7 +244,7 @@ fn copy_source_snapshot(source: &std::path::Path, destination: &std::path::Path)
     Ok(())
 }
 
-fn record_install(state_home: &std::path::Path, name: &str, version: &str) -> Result<(), String> {
+fn record_install(state_home: &std::path::Path, name: &str, version: &str, runtime: &str) -> Result<(), String> {
     std::fs::create_dir_all(state_home).map_err(|error| error.to_string())?;
     let path = state_home.join("registry.json");
     let mut registry = if path.exists() {
@@ -193,7 +259,7 @@ fn record_install(state_home: &std::path::Path, name: &str, version: &str) -> Re
     if !package.versions.iter().any(|installed| installed.version == version) {
         package.versions.push(mcp_cli::registry::InstalledVersion {
             version: version.to_owned(),
-            runtime: "python".to_owned(),
+            runtime: runtime.to_owned(),
             source: "local".to_owned(),
             installed_at: "installed".to_owned(),
         });

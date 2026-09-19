@@ -67,6 +67,28 @@ fn list_uses_active_version_runtime() {
     fs::remove_dir_all(state).unwrap();
 }
 
+#[test]
+fn use_persistently_selects_installed_version_and_rejects_unknown_versions() {
+    let state = temporary_state();
+    fs::write(state.join("registry.json"), r#"{"schema_version":1,"packages":{"alpha":{"active_version":"1.0.0","versions":[{"version":"1.0.0","runtime":"python","source":"local","installed_at":"now"},{"version":"2.0.0","runtime":"python","source":"local","installed_at":"now"}]}}}"#).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_mcp-cli")).args(["use", "alpha@2.0.0"]).env("MCPCTL_HOME", &state).output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(mcp_cli::registry::load_registry(&state.join("registry.json")).unwrap().packages["alpha"].active_version.as_deref(), Some("2.0.0"));
+    let output = Command::new(env!("CARGO_BIN_EXE_mcp-cli")).args(["use", "alpha@3.0.0"]).env("MCPCTL_HOME", &state).output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not installed"));
+    fs::remove_dir_all(state).unwrap();
+}
+
+#[test]
+fn use_rejects_invalid_package_selector() {
+    let state = temporary_state();
+    let output = Command::new(env!("CARGO_BIN_EXE_mcp-cli")).args(["use", "../alpha@1.0.0"]).env("MCPCTL_HOME", &state).output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid package selector"));
+    fs::remove_dir_all(state).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn uninstall_keeps_package_files_when_registry_save_fails() {
