@@ -56,10 +56,58 @@ fn main() {
                 fatal(format!("cannot record installation: {error}"));
             }
         }
+        [command, package, arguments @ ..] if command == "run" => run_package(package, arguments),
         _ => {
             eprintln!("unrecognized argument");
             std::process::exit(2);
         }
+    }
+}
+
+fn run_package(package: &str, arguments: &[String]) {
+    let (name, requested_version) = package.split_once('@').map_or((package, None), |(name, version)| (name, Some(version)));
+    if requested_version == Some("") {
+        fatal("run version is required after @".to_owned());
+    }
+    if name.is_empty() || name.contains('/') || name.contains('\\') || requested_version.is_some_and(|version| version.contains('/') || version.contains('\\')) {
+        fatal("invalid package selector".to_owned());
+    }
+    let state_home = mcp_cli::paths::data_home_from(
+        std::env::var_os("MCPCTL_HOME").map(std::path::PathBuf::from),
+    )
+    .unwrap_or_else(|error| fatal(error));
+    let registry = mcp_cli::registry::load_registry(&state_home.join("registry.json"))
+        .unwrap_or_else(|_| fatal(format!("{name} is not installed")));
+    let package = registry.packages.get(name).unwrap_or_else(|| fatal(format!("{name} is not installed")));
+    let version = requested_version
+        .map(str::to_owned)
+        .or_else(|| package.active_version.clone())
+        .unwrap_or_else(|| fatal(format!("{name} has no active version")));
+    if !package.versions.iter().any(|installed| installed.version == version) {
+        fatal(format!("{name}@{version} is not installed"));
+    }
+    let install_root = state_home.join("packages").join(name).join(&version);
+    let manifest = std::fs::read_to_string(install_root.join("source/mcpctl.toml"))
+        .map_err(|error| error.to_string())
+        .and_then(|contents| mcp_cli::manifest::parse_manifest(&contents))
+        .unwrap_or_else(|error| fatal(format!("cannot read installed manifest: {error}")));
+    let runtime_bin = install_root.join("runtime/bin");
+    let mut path_entries = vec![runtime_bin.clone()];
+    if let Some(path) = std::env::var_os("PATH") {
+        path_entries.extend(std::env::split_paths(&path));
+    }
+    let mut command = std::process::Command::new(runtime_bin.join(manifest.install.entrypoint));
+    command.args(arguments).env("PATH", std::env::join_paths(path_entries).unwrap()).env_remove("VIRTUAL_ENV").env_remove("PYTHONHOME");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let error = command.exec();
+        fatal(format!("cannot run {name}@{version}: {error}"));
+    }
+    #[cfg(not(unix))]
+    {
+        let status = command.status().unwrap_or_else(|error| fatal(format!("cannot run {name}@{version}: {error}")));
+        std::process::exit(status.code().unwrap_or(1));
     }
 }
 
