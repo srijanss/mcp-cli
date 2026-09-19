@@ -57,10 +57,51 @@ fn main() {
             }
         }
         [command, package, arguments @ ..] if command == "run" => run_package(package, arguments),
+        [command] if command == "list" => list_packages(),
+        [command, package] if command == "info" => info_package(package),
+        [command, package] if command == "uninstall" => uninstall_package(package),
         _ => {
             eprintln!("unrecognized argument");
             std::process::exit(2);
         }
+    }
+}
+
+fn uninstall_package(selector: &str) {
+    let Some((name, version)) = selector.split_once('@') else { fatal("uninstall requires name@version".to_owned()) };
+    if name.is_empty() || version.is_empty() || name.contains(['/', '\\']) || version.contains(['/', '\\']) {
+        fatal("invalid package selector".to_owned());
+    }
+    let state_home = mcp_cli::paths::data_home_from(std::env::var_os("MCPCTL_HOME").map(std::path::PathBuf::from)).unwrap_or_else(|error| fatal(error));
+    let registry_path = state_home.join("registry.json");
+    let mut registry = mcp_cli::registry::load_registry(&registry_path).unwrap_or_else(|error| fatal(format!("cannot read registry: {error}")));
+    let package = registry.packages.get_mut(name).unwrap_or_else(|| fatal(format!("{name} is not installed")));
+    if package.active_version.as_deref() == Some(version) && package.versions.len() > 1 { fatal(format!("{name}@{version} is active; select another version first")); }
+    let before = package.versions.len(); package.versions.retain(|installed| installed.version != version);
+    if package.versions.len() == before { fatal(format!("{name}@{version} is not installed")); }
+    if package.active_version.as_deref() == Some(version) { package.active_version = None; }
+    mcp_cli::registry::save_registry(&registry_path, &registry).unwrap_or_else(|error| fatal(error));
+    std::fs::remove_dir_all(state_home.join("packages").join(name).join(version)).unwrap_or_else(|error| fatal(format!("cannot remove {name}@{version}: {error}")));
+}
+
+fn info_package(name: &str) {
+    let state_home = mcp_cli::paths::data_home_from(std::env::var_os("MCPCTL_HOME").map(std::path::PathBuf::from)).unwrap_or_else(|error| fatal(error));
+    let registry = mcp_cli::registry::load_registry(&state_home.join("registry.json")).unwrap_or_else(|error| fatal(format!("cannot read registry: {error}")));
+    let package = registry.packages.get(name).unwrap_or_else(|| fatal(format!("{name} is not installed")));
+    for version in &package.versions {
+        println!("{name}\t{}\t{}\t{}", version.version, version.runtime, if package.active_version.as_deref() == Some(&version.version) { "active" } else { "inactive" });
+    }
+}
+
+fn list_packages() {
+    let state_home = mcp_cli::paths::data_home_from(std::env::var_os("MCPCTL_HOME").map(std::path::PathBuf::from))
+        .unwrap_or_else(|error| fatal(error));
+    let registry = mcp_cli::registry::load_registry(&state_home.join("registry.json"))
+        .unwrap_or_else(|error| fatal(format!("cannot read registry: {error}")));
+    for (name, package) in registry.packages {
+        let versions = package.versions.iter().map(|version| version.version.as_str()).collect::<Vec<_>>().join(", ");
+        let runtime = package.active_version.as_ref().and_then(|active| package.versions.iter().find(|version| &version.version == active)).map(|version| version.runtime.as_str()).unwrap_or("unknown");
+        println!("{name}\t{}\t{versions}\t{runtime}", package.active_version.unwrap_or_else(|| "-".to_owned()));
     }
 }
 
