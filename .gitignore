@@ -1,1 +1,7 @@
 /target
+.tdd-features.json
+.tdd-state.json
+.tdd-research.json
+.tdd-review-findings.json
+.tdd-session.log
+*.json.lock
