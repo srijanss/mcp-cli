@@ -61,6 +61,18 @@ fn main() {
                 let _ = std::fs::remove_dir_all(destination.parent().unwrap());
                 fatal("uv failed to create the isolated runtime".to_owned());
             }
+            let status = std::process::Command::new("uv")
+                .args(["pip", "install", "--python", runtime.join("bin/python").to_str().unwrap(), destination.to_str().unwrap()])
+                .status()
+                .unwrap_or_else(|error| fatal(format!("cannot run uv: {error}")));
+            if !status.success() {
+                let _ = std::fs::remove_dir_all(destination.parent().unwrap());
+                let package_dir = destination.parent().unwrap().parent().unwrap();
+                if std::fs::read_dir(package_dir).ok().is_some_and(|mut entries| entries.next().is_none()) {
+                    let _ = std::fs::remove_dir(package_dir);
+                }
+                fatal("uv failed to install Python MCP dependencies".to_owned());
+            }
             if let Err(error) = record_install(&state_home, &package_name, &package_version, "python") {
                 let _ = std::fs::remove_dir_all(destination.parent().unwrap());
                 fatal(format!("cannot record installation: {error}"));

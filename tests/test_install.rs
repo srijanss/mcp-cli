@@ -238,6 +238,40 @@ fn python_install_creates_uv_isolated_runtime_outside_project() {
 }
 
 #[test]
+fn python_install_installs_snapshot_dependencies_into_its_isolated_runtime() {
+    let project = temporary_project();
+    let state_home = project.join("state");
+    let bin = project.join("bin");
+    let log = project.join("uv.log");
+    fs::create_dir_all(&bin).unwrap();
+    fs::write(
+        bin.join("uv"),
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$UV_LOG\"\nif [ \"$1\" = \"venv\" ]; then /bin/mkdir -p \"$2/bin\"; /usr/bin/touch \"$2/bin/python\"; fi\nexit 0\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(bin.join("uv"), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    assert!(Command::new(env!("CARGO_BIN_EXE_mcp-cli"))
+        .args(["install", project.to_str().unwrap()])
+        .env("MCPCTL_HOME", &state_home)
+        .env("UV_LOG", &log)
+        .env("PATH", &bin)
+        .status()
+        .unwrap()
+        .success());
+
+    let runtime = state_home.join("packages/example-mcp/1.0.0/runtime/bin/python");
+    let snapshot = state_home.join("packages/example-mcp/1.0.0/source");
+    let log_contents = fs::read_to_string(log).unwrap();
+    assert!(log_contents.contains(&format!("pip install --python {} {}", runtime.display(), snapshot.display())));
+    fs::remove_dir_all(project).unwrap();
+}
+
+#[test]
 fn python_install_records_versions_and_keeps_first_active() {
     let project = temporary_project();
     let state_home = project.join("state");
@@ -296,6 +330,21 @@ fn failed_python_install_leaves_no_installed_or_active_state() {
     assert!(!state_home.join("packages/example-mcp/1.0.0").exists());
     assert!(!state_home.join("registry.json").exists());
 
+    fs::remove_dir_all(project).unwrap();
+}
+
+#[test]
+fn pip_install_failure_removes_all_package_state() {
+    let project = temporary_project();
+    let state_home = project.join("state");
+    let bin = project.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::write(bin.join("uv"), "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"venv\" ]; then /bin/mkdir -p \"$2/bin\"; exit 0; fi\nexit 7\n").unwrap();
+    #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; fs::set_permissions(bin.join("uv"), fs::Permissions::from_mode(0o755)).unwrap(); }
+    let output = Command::new(env!("CARGO_BIN_EXE_mcp-cli")).args(["install", project.to_str().unwrap()]).env("MCPCTL_HOME", &state_home).env("PATH", &bin).output().unwrap();
+    assert!(!output.status.success());
+    assert!(!state_home.join("packages/example-mcp").exists());
+    assert!(!state_home.join("registry.json").exists());
     fs::remove_dir_all(project).unwrap();
 }
 
