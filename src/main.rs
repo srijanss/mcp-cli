@@ -1,93 +1,83 @@
 fn main() {
-    match std::env::args().skip(1).collect::<Vec<_>>().as_slice() {
-        [flag] if flag == "--version" => println!("mcpctl 0.1.0"),
-        [flag] if flag == "--help" || flag == "-h" => println!(
-            "Usage: mcpctl <COMMAND>\n\nCommands:\n  install\n  run\n  list\n  info\n  uninstall\n  use\n  update\n  doctor"
-        ),
-        [] => {
-            eprintln!("Usage: mcpctl <COMMAND>");
-            std::process::exit(2);
-        }
-        [command] if command == "install" => {
-            eprintln!("install requires a local project path");
-            std::process::exit(2);
-        }
-        [command, project] if command == "install" => {
-            let manifest_path = std::path::Path::new(project).join("mcpctl.toml");
-            let contents = std::fs::read_to_string(&manifest_path)
-                .unwrap_or_else(|error| fatal(format!("cannot read {}: {error}", manifest_path.display())));
-            let manifest = mcp_cli::manifest::parse_manifest(&contents)
-                .unwrap_or_else(|error| fatal(format!("invalid manifest: {error}")));
-            let state_home = mcp_cli::paths::data_home_from(
-                std::env::var_os("MCPCTL_HOME").map(std::path::PathBuf::from),
-            )
-            .unwrap_or_else(|error| fatal(error));
-            let package_name = manifest.name.clone();
-            let package_version = manifest.version.clone();
-            if state_home.join("packages").join(&package_name).join(&package_version).exists() {
-                fatal(format!("{package_name}@{package_version} is already installed; installed versions are immutable"));
-            }
-            if matches!(manifest.runtime, mcp_cli::manifest::Runtime::Binary) {
-                let binary = std::path::Path::new(project).join(&manifest.install.entrypoint);
-                if !binary.is_file() { fatal(format!("Python MCPs and binary MCPs require an entrypoint: {}", binary.display())); }
-                #[cfg(unix)]
-                if !std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&binary).unwrap_or_else(|error| fatal(error.to_string())).permissions()).eq(&0) {
-                    let mode = std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&binary).unwrap_or_else(|error| fatal(error.to_string())).permissions());
-                    if mode & 0o111 == 0 { fatal("binary entrypoint is not executable".to_owned()); }
-                }
-                let root = state_home.join("packages").join(&package_name).join(&package_version);
-                let runtime_bin = root.join("runtime/bin");
-                std::fs::create_dir_all(&runtime_bin).unwrap_or_else(|error| abort_install(&root, format!("cannot create binary runtime: {error}")));
-                copy_source_snapshot(std::path::Path::new(project), &root.join("source")).unwrap_or_else(|error| abort_install(&root, format!("cannot snapshot source: {error}")));
-                let installed_binary = runtime_bin.join(&manifest.install.entrypoint);
-                if let Some(parent) = installed_binary.parent() {
-                    std::fs::create_dir_all(parent).unwrap_or_else(|error| abort_install(&root, format!("cannot create binary runtime: {error}")));
-                }
-                std::fs::copy(&binary, &installed_binary).unwrap_or_else(|error| abort_install(&root, format!("cannot copy binary: {error}")));
-                if let Err(error) = record_install(&state_home, &package_name, &package_version, "binary") { abort_install(&root, format!("cannot record installation: {error}")); }
-                return;
-            }
-            let mcp_cli::manifest::Runtime::Python { python } = manifest.runtime else { unreachable!() };
-            if std::process::Command::new("uv").arg("--version").status().map(|status| !status.success()).unwrap_or(true) { fatal("uv is required to install Python MCPs".to_owned()); }
-            let destination = state_home
-                .join("packages")
-                .join(&package_name)
-                .join(&package_version)
-                .join("source");
-            let version_root = destination.parent().unwrap().to_path_buf();
-            copy_source_snapshot(std::path::Path::new(project), &destination)
-                .unwrap_or_else(|error| abort_install(&version_root, format!("cannot snapshot source: {error}")));
-            let runtime = version_root.join("runtime");
-            let status = std::process::Command::new("uv")
-                .args(["venv", runtime.to_str().unwrap(), "--python", &python])
-                .status()
-                .unwrap_or_else(|error| abort_install(&version_root, format!("cannot run uv: {error}")));
-            if !status.success() {
-                abort_install(&version_root, "uv failed to create the isolated runtime".to_owned());
-            }
-            let status = std::process::Command::new("uv")
-                .args(["pip", "install", "--python", runtime.join("bin/python").to_str().unwrap(), destination.to_str().unwrap()])
-                .status()
-                .unwrap_or_else(|error| abort_install(&version_root, format!("cannot run uv: {error}")));
-            if !status.success() {
-                abort_install(&version_root, "uv failed to install Python MCP dependencies".to_owned());
-            }
-            if let Err(error) = record_install(&state_home, &package_name, &package_version, "python") {
-                abort_install(&version_root, format!("cannot record installation: {error}"));
-            }
-        }
-        [command, package, arguments @ ..] if command == "run" => run_package(package, arguments),
-        [command] if command == "list" => list_packages(),
-        [command, package] if command == "info" => info_package(package),
-        [command, package] if command == "uninstall" => uninstall_package(package),
-        [command, package] if command == "use" => use_package(package),
-        [command, package, flag, source] if command == "update" && flag == "--source" => update_package(package, source),
-        [command] if command == "doctor" => doctor(),
-        _ => {
-            eprintln!("unrecognized argument");
-            std::process::exit(2);
-        }
+    use clap::Parser;
+    use mcp_cli::cli::{Cli, Command};
+
+    match Cli::parse().command {
+        Command::Install { project } => install_package(&project),
+        Command::Run { package, arguments } => run_package(&package, &arguments),
+        Command::List => list_packages(),
+        Command::Info { package } => info_package(&package),
+        Command::Uninstall { package } => uninstall_package(&package),
+        Command::Use { selector } => use_package(&selector),
+        Command::Update { package, source } => update_package(&package, &source),
+        Command::Doctor => doctor(),
     }
+}
+
+fn install_package(project: &str) {
+    let manifest_path = std::path::Path::new(project).join("mcpctl.toml");
+    let contents = std::fs::read_to_string(&manifest_path)
+        .unwrap_or_else(|error| fatal(format!("cannot read {}: {error}", manifest_path.display())));
+    let manifest = mcp_cli::manifest::parse_manifest(&contents)
+        .unwrap_or_else(|error| fatal(format!("invalid manifest: {error}")));
+    let state_home = mcp_cli::paths::data_home_from(
+        std::env::var_os("MCPCTL_HOME").map(std::path::PathBuf::from),
+    )
+    .unwrap_or_else(|error| fatal(error));
+    let package_name = manifest.name.clone();
+    let package_version = manifest.version.clone();
+    if state_home.join("packages").join(&package_name).join(&package_version).exists() {
+        fatal(format!("{package_name}@{package_version} is already installed; installed versions are immutable"));
+    }
+    if matches!(manifest.runtime, mcp_cli::manifest::Runtime::Binary) {
+        let binary = std::path::Path::new(project).join(&manifest.install.entrypoint);
+        if !binary.is_file() { fatal(format!("Python MCPs and binary MCPs require an entrypoint: {}", binary.display())); }
+        #[cfg(unix)]
+        if !std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&binary).unwrap_or_else(|error| fatal(error.to_string())).permissions()).eq(&0) {
+            let mode = std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&binary).unwrap_or_else(|error| fatal(error.to_string())).permissions());
+            if mode & 0o111 == 0 { fatal("binary entrypoint is not executable".to_owned()); }
+        }
+        let root = state_home.join("packages").join(&package_name).join(&package_version);
+        let runtime_bin = root.join("runtime/bin");
+        std::fs::create_dir_all(&runtime_bin).unwrap_or_else(|error| abort_install(&root, format!("cannot create binary runtime: {error}")));
+        copy_source_snapshot(std::path::Path::new(project), &root.join("source")).unwrap_or_else(|error| abort_install(&root, format!("cannot snapshot source: {error}")));
+        let installed_binary = runtime_bin.join(&manifest.install.entrypoint);
+        if let Some(parent) = installed_binary.parent() {
+            std::fs::create_dir_all(parent).unwrap_or_else(|error| abort_install(&root, format!("cannot create binary runtime: {error}")));
+        }
+        std::fs::copy(&binary, &installed_binary).unwrap_or_else(|error| abort_install(&root, format!("cannot copy binary: {error}")));
+        if let Err(error) = record_install(&state_home, &package_name, &package_version, "binary") { abort_install(&root, format!("cannot record installation: {error}")); }
+        return;
+    }
+    let mcp_cli::manifest::Runtime::Python { python } = manifest.runtime else { unreachable!() };
+    if std::process::Command::new("uv").arg("--version").status().map(|status| !status.success()).unwrap_or(true) { fatal("uv is required to install Python MCPs".to_owned()); }
+    let destination = state_home
+        .join("packages")
+        .join(&package_name)
+        .join(&package_version)
+        .join("source");
+    let version_root = destination.parent().unwrap().to_path_buf();
+    copy_source_snapshot(std::path::Path::new(project), &destination)
+        .unwrap_or_else(|error| abort_install(&version_root, format!("cannot snapshot source: {error}")));
+    let runtime = version_root.join("runtime");
+    let status = std::process::Command::new("uv")
+        .args(["venv", runtime.to_str().unwrap(), "--python", &python])
+        .status()
+        .unwrap_or_else(|error| abort_install(&version_root, format!("cannot run uv: {error}")));
+    if !status.success() {
+        abort_install(&version_root, "uv failed to create the isolated runtime".to_owned());
+    }
+    let status = std::process::Command::new("uv")
+        .args(["pip", "install", "--python", runtime.join("bin/python").to_str().unwrap(), destination.to_str().unwrap()])
+        .status()
+        .unwrap_or_else(|error| abort_install(&version_root, format!("cannot run uv: {error}")));
+    if !status.success() {
+        abort_install(&version_root, "uv failed to install Python MCP dependencies".to_owned());
+    }
+    if let Err(error) = record_install(&state_home, &package_name, &package_version, "python") {
+        abort_install(&version_root, format!("cannot record installation: {error}"));
+    }
+
 }
 
 fn update_package(name: &str, source: &str) {
