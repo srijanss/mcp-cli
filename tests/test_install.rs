@@ -388,8 +388,34 @@ fn binary_install_rejects_traversal_entrypoint() {
     let _ = fs::remove_file(project.parent().unwrap().join("outside")); fs::remove_dir_all(project).unwrap();
 }
 
+#[cfg(unix)]
 #[test]
-fn binary_install_rejects_nested_entrypoint_path() {
+fn binary_install_accepts_source_relative_entrypoint_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = temporary_project();
+    let state_home = project.join("state");
+    fs::write(project.join("mcpctl.toml"), "name = \"example-rust-mcp\"\nversion = \"1.0.0\"\n[runtime]\ntype = \"binary\"\n[install]\nentrypoint = \"dist/example-rust-mcp\"\n").unwrap();
+    fs::create_dir_all(project.join("dist")).unwrap();
+    fs::write(project.join("dist/example-rust-mcp"), "#!/bin/sh\nprintf binary\n").unwrap();
+    fs::set_permissions(project.join("dist/example-rust-mcp"), fs::Permissions::from_mode(0o755)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_mcp-cli")).args(["install", project.to_str().unwrap()]).env("MCPCTL_HOME", &state_home).env("PATH", "").output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(state_home.join("packages/example-rust-mcp/1.0.0/runtime/bin/dist/example-rust-mcp").is_file());
+    fs::remove_dir_all(project).unwrap();
+}
+
+#[test]
+fn binary_install_rejects_absolute_entrypoint_path() {
+    let project = temporary_project();
+    fs::write(project.join("mcpctl.toml"), "name = \"binary-mcp\"\nversion = \"1.0.0\"\n[runtime]\ntype = \"binary\"\n[install]\nentrypoint = \"/bin/sh\"\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_mcp-cli")).args(["install", project.to_str().unwrap()]).env("MCPCTL_HOME", project.join("state")).output().unwrap();
+    assert!(!output.status.success()); assert!(String::from_utf8_lossy(&output.stderr).contains("entrypoint"));
+    assert!(!project.join("state/packages").exists());
+    fs::remove_dir_all(project).unwrap();
+}
+
+#[test]
+fn binary_install_rejects_missing_nested_entrypoint_file() {
     let project = temporary_project();
     fs::write(project.join("mcpctl.toml"), "name = \"binary-mcp\"\nversion = \"1.0.0\"\n[runtime]\ntype = \"binary\"\n[install]\nentrypoint = \"bin/server\"\n").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_mcp-cli")).args(["install", project.to_str().unwrap()]).output().unwrap();

@@ -22,18 +22,30 @@ pub struct Install {
     pub entrypoint: String,
 }
 
+fn is_valid_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    let starts_ok = bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit());
+    starts_ok
+        && bytes.all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+        })
+}
+
 pub fn parse_manifest(contents: &str) -> Result<PackageManifest, String> {
     let manifest: PackageManifest = toml::from_str(contents).map_err(|error| error.to_string())?;
-    if manifest.name.is_empty()
-        || !manifest
-            .name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-    {
-        return Err("manifest name must use only letters, digits, hyphens, or underscores".to_owned());
+    if !is_valid_name(&manifest.name) {
+        return Err(
+            "manifest name must match [a-z0-9][a-z0-9._-]* (lowercase letters, digits, dots, underscores, hyphens)"
+                .to_owned(),
+        );
     }
-    semver::Version::parse(&manifest.version)
+    let version = semver::Version::parse(&manifest.version)
         .map_err(|_| "manifest version must be valid semver".to_owned())?;
+    if !version.build.is_empty() {
+        return Err("manifest version must not include semver build metadata".to_owned());
+    }
     if let Runtime::Python { python } = &manifest.runtime {
         if python.trim().is_empty() {
             return Err("python manifests require a runtime.python constraint".to_owned());
@@ -42,7 +54,19 @@ pub fn parse_manifest(contents: &str) -> Result<PackageManifest, String> {
             return Err("python manifests require install.strategy = \"uv\"".to_owned());
         }
     }
+    if matches!(manifest.runtime, Runtime::Binary) && !is_safe_relative_path(&manifest.install.entrypoint) {
+        return Err(
+            "binary entrypoint must be a non-empty source-relative path without '..' segments or absolute paths"
+                .to_owned(),
+        );
+    }
     Ok(manifest)
+}
+
+fn is_safe_relative_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.contains('\\')
+        && path.split('/').all(|segment| !segment.is_empty() && segment != "..")
 }
 
 pub fn parse_binary_manifest(contents: &str) -> Result<PackageManifest, String> {

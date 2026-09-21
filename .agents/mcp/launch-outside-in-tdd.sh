@@ -17,6 +17,7 @@ export TDD_CONFIG_PATH="$PROJECT_ROOT/.tdd-config.json"
 # scripts) isn't guaranteed to be on whatever PATH the MCP client spawns
 # this with.
 export PATH="$PROJECT_ROOT/.venv/bin:$HOME/.local/bin:$PATH"
+export PATH="$HOME/.cargo/bin:$PATH"
 
 # Resolved via PATH (not a hardcoded ~/.local/bin path) so a worktree with
 # its own .venv (see .agents/scripts/setup-worktree.sh) runs its own code;

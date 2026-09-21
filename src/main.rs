@@ -25,9 +25,6 @@ fn main() {
             let package_name = manifest.name.clone();
             let package_version = manifest.version.clone();
             if matches!(manifest.runtime, mcp_cli::manifest::Runtime::Binary) {
-                if manifest.install.entrypoint.is_empty() || manifest.install.entrypoint.contains(['/', '\\']) {
-                    fatal("binary entrypoint must be a filename without path separators".to_owned());
-                }
                 let binary = std::path::Path::new(project).join(&manifest.install.entrypoint);
                 if !binary.is_file() { fatal(format!("Python MCPs and binary MCPs require an entrypoint: {}", binary.display())); }
                 #[cfg(unix)]
@@ -39,7 +36,11 @@ fn main() {
                 let runtime_bin = root.join("runtime/bin");
                 std::fs::create_dir_all(&runtime_bin).unwrap_or_else(|error| fatal(format!("cannot create binary runtime: {error}")));
                 copy_source_snapshot(std::path::Path::new(project), &root.join("source")).unwrap_or_else(|error| fatal(format!("cannot snapshot source: {error}")));
-                std::fs::copy(&binary, runtime_bin.join(&manifest.install.entrypoint)).unwrap_or_else(|error| fatal(format!("cannot copy binary: {error}")));
+                let installed_binary = runtime_bin.join(&manifest.install.entrypoint);
+                if let Some(parent) = installed_binary.parent() {
+                    std::fs::create_dir_all(parent).unwrap_or_else(|error| fatal(format!("cannot create binary runtime: {error}")));
+                }
+                std::fs::copy(&binary, &installed_binary).unwrap_or_else(|error| fatal(format!("cannot copy binary: {error}")));
                 if let Err(error) = record_install(&state_home, &package_name, &package_version, "binary") { let _ = std::fs::remove_dir_all(&root); fatal(format!("cannot record installation: {error}")); }
                 return;
             }

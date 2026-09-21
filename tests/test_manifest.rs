@@ -139,3 +139,63 @@ fn python_manifest_rejects_whitespace_runtime_constraint() {
     )
     .is_err());
 }
+
+fn binary_manifest(name: &str, version: &str) -> String {
+    format!(
+        "name = \"{name}\"\nversion = \"{version}\"\n[runtime]\ntype = \"binary\"\n[install]\nentrypoint = \"x\""
+    )
+}
+
+#[test]
+fn manifest_rejects_uppercase_name() {
+    assert!(parse_manifest(&binary_manifest("Project-MCP", "1.0.0")).is_err());
+}
+
+#[test]
+fn manifest_rejects_name_starting_with_separator_char() {
+    for name in ["-mcp", ".mcp", "_mcp"] {
+        assert!(parse_manifest(&binary_manifest(name, "1.0.0")).is_err(), "{name}");
+    }
+}
+
+#[test]
+fn manifest_accepts_lowercase_names_with_dots_underscores_and_hyphens() {
+    for name in ["mcp", "0mcp", "my.mcp_server-2"] {
+        assert!(parse_manifest(&binary_manifest(name, "1.0.0")).is_ok(), "{name}");
+    }
+}
+
+#[test]
+fn manifest_rejects_semver_build_metadata() {
+    assert!(parse_manifest(&binary_manifest("project-mcp", "1.0.0+local")).is_err());
+}
+
+#[test]
+fn manifest_accepts_semver_prerelease() {
+    assert!(parse_manifest(&binary_manifest("project-mcp", "1.0.0-rc.1")).is_ok());
+}
+
+fn binary_manifest_with_entrypoint(entrypoint: &str) -> String {
+    format!(
+        "name = \"example-rust-mcp\"\nversion = \"1.0.0\"\n[runtime]\ntype = \"binary\"\n[install]\nentrypoint = \"{entrypoint}\""
+    )
+}
+
+#[test]
+fn binary_manifest_accepts_source_relative_entrypoint_paths() {
+    for entrypoint in ["example-rust-mcp", "dist/example-rust-mcp", "target/release/bin/x", "./dist/x"] {
+        let manifest = parse_manifest(&binary_manifest_with_entrypoint(entrypoint))
+            .unwrap_or_else(|error| panic!("{entrypoint}: {error}"));
+        assert_eq!(manifest.install.entrypoint, entrypoint);
+    }
+}
+
+#[test]
+fn binary_manifest_rejects_traversal_absolute_and_empty_entrypoints() {
+    for entrypoint in ["", "/bin/sh", "../outside", "dist/../../outside", "dist/..", "..", "dist//x", "dist/", "C:\\\\x", "dist\\\\x"] {
+        assert!(
+            parse_manifest(&binary_manifest_with_entrypoint(entrypoint)).is_err(),
+            "{entrypoint:?}"
+        );
+    }
+}
