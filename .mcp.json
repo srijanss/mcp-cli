@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "outside-in-tdd": {
-      "command": "${CLAUDE_PROJECT_DIR:-.}/.agents/mcp/launch-outside-in-tdd.sh",
-      "args": []
+      "command": "/usr/local/bin/mcpctl",
+      "args": ["run", "outside-in-tdd-mcp"]
     }
   }
 }

@@ -18,6 +18,11 @@ fn parses_every_command() {
         parse(&["update", "pkg", "--source", "./p"]),
         Command::Update { package, source } if package == "pkg" && source == "./p"
     ));
+    assert!(matches!(parse(&["init", "pkg"]), Command::Init { package, target } if package == "pkg" && target.is_none()));
+    assert!(matches!(
+        parse(&["init", "pkg", "./proj"]),
+        Command::Init { package, target } if package == "pkg" && target.as_deref() == Some("./proj")
+    ));
     assert!(matches!(
         parse(&["run", "pkg", "--flag", "x"]),
         Command::Run { package, arguments } if package == "pkg" && arguments == ["--flag", "x"]

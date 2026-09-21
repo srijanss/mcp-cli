@@ -116,6 +116,7 @@ mcpctl list
 mcpctl info <name>
 mcpctl use <name>@<version>
 mcpctl update <name> --source <local-project-path>
+mcpctl init <name>[@<version>] [target-directory]
 mcpctl uninstall <name>@<version>
 mcpctl doctor
 mcpctl --version
@@ -126,6 +127,48 @@ version is active. Use `mcpctl use name@version` to change the default.
 `run name@version` runs a particular installed version without changing that
 default. `update` installs from the supplied source and selects its manifest
 version.
+
+## Shipping project files (`[scaffold]` and `mcpctl init`)
+
+An MCP often needs files in every project that uses it: an `.mcp.json`,
+agent instructions, hooks, a config template. Declare them in the MCP's own
+`mcpctl.toml` and let users copy them out of the installed package:
+
+```toml
+[scaffold]
+dirs = [".agents", ".claude"]                  # copied recursively, same path in the project
+exclude = [".claude/settings.local.json"]      # source paths skipped by the `dirs` copies
+
+[[scaffold.files]]                             # explicit source -> destination mapping
+from = ".mcp.json.example"
+to = ".mcp.json"
+
+[[scaffold.hints]]                             # printed after the copy
+message = "Defaults to pytest."
+
+[[scaffold.hints]]                             # only printed when the marker exists in the project
+when_exists = "Cargo.toml"
+message = "Rust project detected: use cargo-adapter-runner."
+```
+
+```sh
+cd /path/to/project
+mcpctl init notes-mcp                # active version, into the current directory
+mcpctl init notes-mcp@1.0.0 ./app    # a specific version, into ./app
+```
+
+- Files are copied from the **installed** package, not from the checkout it
+  was installed from. Change a template, bump the version, and run
+  `mcpctl update`; projects then get the new files the next time they run
+  `init`.
+- `init` never overwrites: a file that already exists in the project is
+  reported as `Skipping <path> (already exists)`, so it is safe to re-run.
+- `exclude` only filters `dirs`; a file named in `files` is always copied.
+  This lets an MCP keep its own development config next to a
+  consumer-facing `.example` copy of it.
+- Every scaffold path must be relative and must not contain `..` (the
+  manifest is rejected otherwise). `hints` are plain messages, so mcpctl
+  itself stays independent of any one MCP's languages or tools.
 
 ## stdio forwarding rules
 

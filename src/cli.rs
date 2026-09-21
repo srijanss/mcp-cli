@@ -36,4 +36,10 @@ pub enum Command {
     },
     /// Check the local installation for problems
     Doctor,
+    /// Copy an installed MCP's scaffold files into a project
+    Init {
+        package: String,
+        #[arg(value_name = "target directory")]
+        target: Option<String>,
+    },
 }

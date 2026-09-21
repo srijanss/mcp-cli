@@ -7,6 +7,33 @@ pub struct PackageManifest {
     pub description: Option<String>,
     pub runtime: Runtime,
     pub install: Install,
+    pub scaffold: Option<Scaffold>,
+}
+
+/// Files a package ships for consumer projects, copied out by `mcpctl init`.
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct Scaffold {
+    #[serde(default)]
+    pub files: Vec<ScaffoldFile>,
+    #[serde(default)]
+    pub dirs: Vec<String>,
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    #[serde(default)]
+    pub hints: Vec<ScaffoldHint>,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct ScaffoldFile {
+    pub from: String,
+    pub to: String,
+}
+
+/// A message printed after `init`; when `when_exists` is set, only if that path exists in the target.
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct ScaffoldHint {
+    pub when_exists: Option<String>,
+    pub message: String,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -59,6 +86,18 @@ pub fn parse_manifest(contents: &str) -> Result<PackageManifest, String> {
             "binary entrypoint must be a non-empty source-relative path without '..' segments or absolute paths"
                 .to_owned(),
         );
+    }
+    if let Some(scaffold) = &manifest.scaffold {
+        let paths = scaffold.dirs.iter().chain(&scaffold.exclude)
+            .chain(scaffold.files.iter().flat_map(|file| [&file.from, &file.to]))
+            .chain(scaffold.hints.iter().filter_map(|hint| hint.when_exists.as_ref()));
+        for path in paths {
+            if !is_safe_relative_path(path) {
+                return Err(format!(
+                    "scaffold path {path:?} must be a non-empty relative path without '..' segments or absolute paths"
+                ));
+            }
+        }
     }
     Ok(manifest)
 }

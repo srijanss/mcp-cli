@@ -11,7 +11,62 @@ fn main() {
         Command::Use { selector } => use_package(&selector),
         Command::Update { package, source } => update_package(&package, &source),
         Command::Doctor => doctor(),
+        Command::Init { package, target } => init_package(&package, target.as_deref()),
     }
+}
+
+fn init_package(selector: &str, target: Option<&str>) {
+    let (name, requested_version) = selector.split_once('@').map_or((selector, None), |(name, version)| (name, Some(version)));
+    let state_home = mcp_cli::paths::data_home_from(std::env::var_os("MCPCTL_HOME").map(std::path::PathBuf::from)).unwrap_or_else(|error| fatal(error));
+    let registry = mcp_cli::registry::load_registry(&state_home.join("registry.json")).unwrap_or_else(|error| fatal(format!("cannot read registry: {error}")));
+    let package = registry.packages.get(name).unwrap_or_else(|| fatal(format!("{name} is not installed")));
+    let version = requested_version.map(str::to_owned).or_else(|| package.active_version.clone()).unwrap_or_else(|| fatal(format!("{name} has no active version")));
+    if !package.versions.iter().any(|installed| installed.version == version) { fatal(format!("{name}@{version} is not installed")); }
+    let source = state_home.join("packages").join(name).join(&version).join("source");
+    let manifest = std::fs::read_to_string(source.join("mcpctl.toml"))
+        .map_err(|error| error.to_string())
+        .and_then(|contents| mcp_cli::manifest::parse_manifest(&contents))
+        .unwrap_or_else(|error| fatal(format!("cannot read installed manifest: {error}")));
+    let scaffold = manifest.scaffold.unwrap_or_else(|| fatal(format!("{name}@{version} does not ship a scaffold")));
+    let target = target.map(std::path::PathBuf::from).unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|error| fatal(error.to_string())));
+    // `exclude` filters the `dirs` copies only; a file named in `files` is always copied.
+    for file in &scaffold.files {
+        copy_scaffold_tree(&source, &target, std::path::Path::new(&file.from), std::path::Path::new(&file.to), &[])
+            .unwrap_or_else(|error| fatal(format!("cannot copy {}: {error}", file.from)));
+    }
+    for dir in &scaffold.dirs {
+        let relative = std::path::Path::new(dir);
+        copy_scaffold_tree(&source, &target, relative, relative, &scaffold.exclude)
+            .unwrap_or_else(|error| fatal(format!("cannot copy {dir}: {error}")));
+    }
+    // A hint applies when it has no marker file, or its marker file exists in the target.
+    for hint in scaffold.hints.iter().filter(|hint| hint.when_exists.as_ref().is_none_or(|marker| target.join(marker).exists())) {
+        println!("{}", hint.message);
+    }
+}
+
+/// Copies `from` (a file or directory, relative to `source_root`) to `to` under `target_root`, skipping `exclude`d source paths.
+fn copy_scaffold_tree(source_root: &std::path::Path, target_root: &std::path::Path, from: &std::path::Path, to: &std::path::Path, exclude: &[String]) -> std::io::Result<()> {
+    if exclude.iter().any(|excluded| std::path::Path::new(excluded) == from) { return Ok(()); }
+    let source = source_root.join(from);
+    let destination = target_root.join(to);
+    if source.is_dir() {
+        std::fs::create_dir_all(&destination)?;
+        for entry in std::fs::read_dir(&source)? {
+            let name = entry?.file_name();
+            copy_scaffold_tree(source_root, target_root, &from.join(&name), &to.join(&name), exclude)?;
+        }
+    } else if source.is_file() {
+        // Never overwrite a file the target project already has.
+        if destination.exists() {
+            println!("Skipping {} (already exists)", to.display());
+            return Ok(());
+        }
+        if let Some(parent) = destination.parent() { std::fs::create_dir_all(parent)?; }
+        std::fs::copy(&source, &destination)?;
+        println!("Copied {}", to.display());
+    }
+    Ok(())
 }
 
 fn install_package(project: &str) {
