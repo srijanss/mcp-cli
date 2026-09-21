@@ -142,6 +142,12 @@ exclude = [".claude/settings.local.json"]      # source paths skipped by the `di
 [[scaffold.files]]                             # explicit source -> destination mapping
 from = ".mcp.json.example"
 to = ".mcp.json"
+merge = "json"                                 # optional: merge into an existing file instead of skipping it
+
+[[scaffold.files]]
+from = ".codex/config.toml.example"
+to = ".codex/config.toml"
+merge = "toml"
 
 [[scaffold.hints]]                             # printed after the copy
 message = "Defaults to pytest."
@@ -163,6 +169,23 @@ mcpctl init notes-mcp@1.0.0 ./app    # a specific version, into ./app
   `init`.
 - `init` never overwrites: a file that already exists in the project is
   reported as `Skipping <path> (already exists)`, so it is safe to re-run.
+- **Merging shared files.** Several MCPs often contribute to the same file
+  (`.mcp.json`, `.claude/settings.json`, `.codex/config.toml`), and a
+  skipped file would leave the second MCP unconfigured. With
+  `merge = "json"` or `"toml"`, an existing destination is merged with the
+  template instead of skipped: objects/tables merge key by key, arrays gain
+  the items they lack (compared by value), and **existing values always
+  win**. Nothing is removed or rewritten, and key order is kept. Re-running
+  is a no-op (`Unchanged <path> (already up to date)`); a change prints
+  `Merged <path>`. A destination that does not parse aborts with an error
+  and is left untouched. A missing destination is simply copied.
+- **Hook entries merge by `matcher`.** In arrays of hook registrations
+  (`hooks.PreToolUse` and friends), an item whose `matcher` already exists is
+  merged into that entry, so its `hooks` list gains only the missing
+  commands instead of a second entry for the same matcher (which would run
+  each hook twice). Keep one entry per matcher in your template.
+- TOML is re-serialized when it is merged, so **comments in an existing
+  TOML file are not preserved** (JSON has none).
 - `exclude` only filters `dirs`; a file named in `files` is always copied.
   This lets an MCP keep its own development config next to a
   consumer-facing `.example` copy of it.

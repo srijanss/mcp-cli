@@ -1,4 +1,4 @@
-use mcp_cli::manifest::parse_manifest;
+use mcp_cli::manifest::{parse_manifest, MergeMode};
 
 const BASE: &str = r#"name = "scaf-mcp"
 version = "1.0.0"
@@ -63,4 +63,33 @@ fn scaffold_paths_that_escape_the_package_or_target_are_rejected() {
         let error = parse_manifest(&with_scaffold(scaffold)).expect_err(scaffold);
         assert!(error.contains("scaffold"), "error should mention scaffold, got: {error} (for {scaffold:?})");
     }
+}
+
+#[test]
+fn scaffold_files_accept_a_json_or_toml_merge_mode_and_reject_anything_else() {
+    let manifest = parse_manifest(&with_scaffold(
+        r#"[[scaffold.files]]
+from = "a.json"
+to = ".claude/settings.json"
+merge = "json"
+
+[[scaffold.files]]
+from = "b.toml"
+to = ".codex/config.toml"
+merge = "toml"
+
+[[scaffold.files]]
+from = "c.txt"
+to = "c.txt"
+"#,
+    ))
+    .unwrap();
+
+    let files = manifest.scaffold.unwrap().files;
+    assert_eq!(files[0].merge, Some(MergeMode::Json));
+    assert_eq!(files[1].merge, Some(MergeMode::Toml));
+    assert_eq!(files[2].merge, None);
+
+    let error = parse_manifest(&with_scaffold("[[scaffold.files]]\nfrom = \"a\"\nto = \"b\"\nmerge = \"yaml\"\n")).expect_err("yaml is not a merge mode");
+    assert!(error.contains("yaml") || error.contains("merge"), "error was: {error}");
 }

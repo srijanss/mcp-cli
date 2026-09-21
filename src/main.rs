@@ -31,6 +31,12 @@ fn init_package(selector: &str, target: Option<&str>) {
     let target = target.map(std::path::PathBuf::from).unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|error| fatal(error.to_string())));
     // `exclude` filters the `dirs` copies only; a file named in `files` is always copied.
     for file in &scaffold.files {
+        let destination = target.join(&file.to);
+        if let (Some(mode), true) = (file.merge, destination.exists()) {
+            merge_scaffold_file(&source.join(&file.from), &destination, &file.to, mode)
+                .unwrap_or_else(|error| fatal(format!("cannot merge {}: {error}", file.to)));
+            continue;
+        }
         copy_scaffold_tree(&source, &target, std::path::Path::new(&file.from), std::path::Path::new(&file.to), &[])
             .unwrap_or_else(|error| fatal(format!("cannot copy {}: {error}", file.from)));
     }
@@ -43,6 +49,34 @@ fn init_package(selector: &str, target: Option<&str>) {
     for hint in scaffold.hints.iter().filter(|hint| hint.when_exists.as_ref().is_none_or(|marker| target.join(marker).exists())) {
         println!("{}", hint.message);
     }
+}
+
+/// Merges a template into the file already at `destination`, never removing or changing what it holds.
+fn merge_scaffold_file(template: &std::path::Path, destination: &std::path::Path, display: &str, mode: mcp_cli::manifest::MergeMode) -> Result<(), String> {
+    use mcp_cli::manifest::MergeMode;
+    let read = |path: &std::path::Path| std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()));
+    let (existing, incoming) = (read(destination)?, read(template)?);
+    // `Some(rendered)` when the merge added anything, `None` when the file is already up to date.
+    let rendered = match mode {
+        MergeMode::Json => {
+            let parse = |path: &std::path::Path, text: &str| serde_json::from_str::<serde_json::Value>(text).map_err(|error| format!("{} is not valid JSON: {error}", path.display()));
+            let (merged, changed) = mcp_cli::merge::merge_json(parse(destination, &existing)?, &parse(template, &incoming)?);
+            if changed { Some(serde_json::to_string_pretty(&merged).map_err(|error| error.to_string())? + "\n") } else { None }
+        }
+        MergeMode::Toml => {
+            let parse = |path: &std::path::Path, text: &str| text.parse::<toml::Value>().map_err(|error| format!("{} is not valid TOML: {error}", path.display()));
+            let (merged, changed) = mcp_cli::merge::merge_toml(parse(destination, &existing)?, &parse(template, &incoming)?);
+            if changed { Some(toml::to_string_pretty(&merged).map_err(|error| error.to_string())?) } else { None }
+        }
+    };
+    match rendered {
+        Some(rendered) => {
+            std::fs::write(destination, rendered).map_err(|error| format!("{}: {error}", destination.display()))?;
+            println!("Merged {display}");
+        }
+        None => println!("Unchanged {display} (already up to date)"),
+    }
+    Ok(())
 }
 
 /// Copies `from` (a file or directory, relative to `source_root`) to `to` under `target_root`, skipping `exclude`d source paths.

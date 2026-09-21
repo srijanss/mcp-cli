@@ -17,6 +17,16 @@ exclude = [".agents/private.txt", "templates/mcp.json"]
 from = "templates/mcp.json"
 to = ".mcp.json"
 
+[[scaffold.files]]
+from = "templates/settings.json"
+to = ".claude/settings.json"
+merge = "json"
+
+[[scaffold.files]]
+from = "templates/config.toml"
+to = ".codex/config.toml"
+merge = "toml"
+
 [[scaffold.hints]]
 message = "Defaults to pytest."
 
@@ -46,6 +56,16 @@ fn installed_scaffold_mcp() -> (PathBuf, PathBuf) {
     fs::set_permissions(project.join("scaf-mcp"), fs::Permissions::from_mode(0o755)).unwrap();
     fs::create_dir_all(project.join("templates")).unwrap();
     fs::write(project.join("templates/mcp.json"), "{\"from\":\"template\"}\n").unwrap();
+    fs::write(
+        project.join("templates/config.toml"),
+        "[mcp_servers.scaf]\ncommand = \"scaf\"\n\n[[hooks.PreToolUse]]\nmatcher = \"Bash\"\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("templates/settings.json"),
+        r#"{"keep":2,"mcpServers":{"scaf":{"command":"scaf"}},"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"command":"a"}]}]}}"#,
+    )
+    .unwrap();
     fs::create_dir_all(project.join(".agents/skills")).unwrap();
     fs::write(project.join(".agents/skills/tdd.md"), "skill\n").unwrap();
     fs::write(project.join(".agents/private.txt"), "secret\n").unwrap();
@@ -128,6 +148,83 @@ fn init_copies_an_explicitly_mapped_file_even_when_exclude_lists_its_source_path
     assert!(output.status.success(), "stderr was: {}", String::from_utf8_lossy(&output.stderr));
     assert_eq!(fs::read_to_string(target.join(".mcp.json")).unwrap(), "{\"from\":\"template\"}\n");
     assert!(!target.join(".agents/private.txt").exists(), "dirs copies still honour exclude");
+
+    fs::remove_dir_all(project).unwrap();
+    fs::remove_dir_all(target).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn init_merges_a_json_template_into_an_existing_file_without_losing_or_duplicating_anything() {
+    let (project, state_home) = installed_scaffold_mcp();
+    let target = temporary_dir("target");
+    fs::create_dir_all(target.join(".claude")).unwrap();
+    fs::write(
+        target.join(".claude/settings.json"),
+        r#"{"keep":1,"mcpServers":{"other":{"command":"x"}},"hooks":{"PreToolUse":[{"matcher":"Edit","hooks":[{"command":"b"}]}]}}"#,
+    )
+    .unwrap();
+
+    let first = init(&state_home, &["scaf-mcp", target.to_str().unwrap()]);
+
+    assert!(first.status.success(), "stderr was: {}", String::from_utf8_lossy(&first.stderr));
+    let merged: serde_json::Value = serde_json::from_str(&fs::read_to_string(target.join(".claude/settings.json")).unwrap()).unwrap();
+    assert_eq!(merged["keep"], 1, "existing scalars win over the template");
+    assert_eq!(merged["mcpServers"]["other"]["command"], "x", "existing keys are kept");
+    assert_eq!(merged["mcpServers"]["scaf"]["command"], "scaf", "template keys are added");
+    let pre_tool_use = merged["hooks"]["PreToolUse"].as_array().unwrap();
+    assert_eq!(pre_tool_use.len(), 2, "template array items are appended: {pre_tool_use:?}");
+    assert!(String::from_utf8_lossy(&first.stdout).contains("Merged .claude/settings.json"), "stdout was: {}", String::from_utf8_lossy(&first.stdout));
+
+    fs::remove_dir_all(project).unwrap();
+    fs::remove_dir_all(target).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn init_merges_a_toml_template_into_an_existing_file_without_losing_or_duplicating_anything() {
+    let (project, state_home) = installed_scaffold_mcp();
+    let target = temporary_dir("target");
+    fs::create_dir_all(target.join(".codex")).unwrap();
+    fs::write(
+        target.join(".codex/config.toml"),
+        "model = \"mine\"\n\n[mcp_servers.other]\ncommand = \"x\"\n\n[[hooks.PreToolUse]]\nmatcher = \"Edit\"\n",
+    )
+    .unwrap();
+
+    let first = init(&state_home, &["scaf-mcp", target.to_str().unwrap()]);
+
+    assert!(first.status.success(), "stderr was: {}", String::from_utf8_lossy(&first.stderr));
+    let merged: toml::Value = fs::read_to_string(target.join(".codex/config.toml")).unwrap().parse().unwrap();
+    assert_eq!(merged["model"].as_str(), Some("mine"));
+    assert_eq!(merged["mcp_servers"]["other"]["command"].as_str(), Some("x"));
+    assert_eq!(merged["mcp_servers"]["scaf"]["command"].as_str(), Some("scaf"));
+    assert_eq!(merged["hooks"]["PreToolUse"].as_array().unwrap().len(), 2);
+    assert!(String::from_utf8_lossy(&first.stdout).contains("Merged .codex/config.toml"), "stdout was: {}", String::from_utf8_lossy(&first.stdout));
+
+    let second = init(&state_home, &["scaf-mcp", target.to_str().unwrap()]);
+    let again: toml::Value = fs::read_to_string(target.join(".codex/config.toml")).unwrap().parse().unwrap();
+    assert_eq!(again, merged, "a second init changes nothing");
+    assert!(String::from_utf8_lossy(&second.stdout).contains("Unchanged .codex/config.toml"), "stdout was: {}", String::from_utf8_lossy(&second.stdout));
+
+    fs::remove_dir_all(project).unwrap();
+    fs::remove_dir_all(target).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn init_refuses_to_merge_into_an_unparseable_file_and_leaves_it_untouched() {
+    let (project, state_home) = installed_scaffold_mcp();
+    let target = temporary_dir("target");
+    fs::create_dir_all(target.join(".claude")).unwrap();
+    fs::write(target.join(".claude/settings.json"), "{ not json").unwrap();
+
+    let output = init(&state_home, &["scaf-mcp", target.to_str().unwrap()]);
+
+    assert!(!output.status.success(), "a corrupt destination must fail the command");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(".claude/settings.json") && stderr.contains("not valid JSON"), "stderr was: {stderr}");
+    assert_eq!(fs::read_to_string(target.join(".claude/settings.json")).unwrap(), "{ not json", "the file must not be modified");
 
     fs::remove_dir_all(project).unwrap();
     fs::remove_dir_all(target).unwrap();

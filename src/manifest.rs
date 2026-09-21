@@ -27,6 +27,15 @@ pub struct Scaffold {
 pub struct ScaffoldFile {
     pub from: String,
     pub to: String,
+    /// When the destination already exists, merge the template into it instead of skipping it.
+    pub merge: Option<MergeMode>,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum MergeMode {
+    Json,
+    Toml,
 }
 
 /// A message printed after `init`; when `when_exists` is set, only if that path exists in the target.
