@@ -37,14 +37,14 @@ fn main() {
                 }
                 let root = state_home.join("packages").join(&package_name).join(&package_version);
                 let runtime_bin = root.join("runtime/bin");
-                std::fs::create_dir_all(&runtime_bin).unwrap_or_else(|error| fatal(format!("cannot create binary runtime: {error}")));
-                copy_source_snapshot(std::path::Path::new(project), &root.join("source")).unwrap_or_else(|error| fatal(format!("cannot snapshot source: {error}")));
+                std::fs::create_dir_all(&runtime_bin).unwrap_or_else(|error| abort_install(&root, format!("cannot create binary runtime: {error}")));
+                copy_source_snapshot(std::path::Path::new(project), &root.join("source")).unwrap_or_else(|error| abort_install(&root, format!("cannot snapshot source: {error}")));
                 let installed_binary = runtime_bin.join(&manifest.install.entrypoint);
                 if let Some(parent) = installed_binary.parent() {
-                    std::fs::create_dir_all(parent).unwrap_or_else(|error| fatal(format!("cannot create binary runtime: {error}")));
+                    std::fs::create_dir_all(parent).unwrap_or_else(|error| abort_install(&root, format!("cannot create binary runtime: {error}")));
                 }
-                std::fs::copy(&binary, &installed_binary).unwrap_or_else(|error| fatal(format!("cannot copy binary: {error}")));
-                if let Err(error) = record_install(&state_home, &package_name, &package_version, "binary") { let _ = std::fs::remove_dir_all(&root); fatal(format!("cannot record installation: {error}")); }
+                std::fs::copy(&binary, &installed_binary).unwrap_or_else(|error| abort_install(&root, format!("cannot copy binary: {error}")));
+                if let Err(error) = record_install(&state_home, &package_name, &package_version, "binary") { abort_install(&root, format!("cannot record installation: {error}")); }
                 return;
             }
             let mcp_cli::manifest::Runtime::Python { python } = manifest.runtime else { unreachable!() };
@@ -54,32 +54,26 @@ fn main() {
                 .join(&package_name)
                 .join(&package_version)
                 .join("source");
+            let version_root = destination.parent().unwrap().to_path_buf();
             copy_source_snapshot(std::path::Path::new(project), &destination)
-                .unwrap_or_else(|error| fatal(format!("cannot snapshot source: {error}")));
-            let runtime = destination.parent().unwrap().join("runtime");
+                .unwrap_or_else(|error| abort_install(&version_root, format!("cannot snapshot source: {error}")));
+            let runtime = version_root.join("runtime");
             let status = std::process::Command::new("uv")
                 .args(["venv", runtime.to_str().unwrap(), "--python", &python])
                 .status()
-                .unwrap_or_else(|error| fatal(format!("cannot run uv: {error}")));
+                .unwrap_or_else(|error| abort_install(&version_root, format!("cannot run uv: {error}")));
             if !status.success() {
-                let _ = std::fs::remove_dir_all(destination.parent().unwrap());
-                fatal("uv failed to create the isolated runtime".to_owned());
+                abort_install(&version_root, "uv failed to create the isolated runtime".to_owned());
             }
             let status = std::process::Command::new("uv")
                 .args(["pip", "install", "--python", runtime.join("bin/python").to_str().unwrap(), destination.to_str().unwrap()])
                 .status()
-                .unwrap_or_else(|error| fatal(format!("cannot run uv: {error}")));
+                .unwrap_or_else(|error| abort_install(&version_root, format!("cannot run uv: {error}")));
             if !status.success() {
-                let _ = std::fs::remove_dir_all(destination.parent().unwrap());
-                let package_dir = destination.parent().unwrap().parent().unwrap();
-                if std::fs::read_dir(package_dir).ok().is_some_and(|mut entries| entries.next().is_none()) {
-                    let _ = std::fs::remove_dir(package_dir);
-                }
-                fatal("uv failed to install Python MCP dependencies".to_owned());
+                abort_install(&version_root, "uv failed to install Python MCP dependencies".to_owned());
             }
             if let Err(error) = record_install(&state_home, &package_name, &package_version, "python") {
-                let _ = std::fs::remove_dir_all(destination.parent().unwrap());
-                fatal(format!("cannot record installation: {error}"));
+                abort_install(&version_root, format!("cannot record installation: {error}"));
             }
         }
         [command, package, arguments @ ..] if command == "run" => run_package(package, arguments),
@@ -162,8 +156,13 @@ fn uninstall_package(selector: &str) {
     let before = package.versions.len(); package.versions.retain(|installed| installed.version != version);
     if package.versions.len() == before { fatal(format!("{name}@{version} is not installed")); }
     if package.active_version.as_deref() == Some(version) { package.active_version = None; }
+    let original_registry = std::fs::read_to_string(&registry_path).unwrap_or_else(|error| fatal(format!("cannot read registry: {error}")));
     mcp_cli::registry::save_registry(&registry_path, &registry).unwrap_or_else(|error| fatal(error));
-    std::fs::remove_dir_all(state_home.join("packages").join(name).join(version)).unwrap_or_else(|error| fatal(format!("cannot remove {name}@{version}: {error}")));
+    if let Err(error) = std::fs::remove_dir_all(state_home.join("packages").join(name).join(version)) {
+        // Put the entry back so registry and files stay consistent and a retry can succeed.
+        let _ = std::fs::write(&registry_path, original_registry);
+        fatal(format!("cannot remove {name}@{version}: {error}"));
+    }
 }
 
 fn info_package(name: &str) {
@@ -236,6 +235,18 @@ fn run_package(package: &str, arguments: &[String]) {
         let status = command.status().unwrap_or_else(|error| fatal(format!("cannot run {name}@{version}: {error}")));
         std::process::exit(status.code().unwrap_or(1));
     }
+}
+
+/// Removes a partially created version directory (and its package directory if
+/// now empty) so a failed install never blocks a retry, then exits with `message`.
+fn abort_install(version_root: &std::path::Path, message: String) -> ! {
+    let _ = std::fs::remove_dir_all(version_root);
+    if let Some(package_dir) = version_root.parent() {
+        if std::fs::read_dir(package_dir).ok().is_some_and(|mut entries| entries.next().is_none()) {
+            let _ = std::fs::remove_dir(package_dir);
+        }
+    }
+    fatal(message)
 }
 
 fn fatal(message: String) -> ! {

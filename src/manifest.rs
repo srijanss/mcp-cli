@@ -67,6 +67,8 @@ fn is_safe_relative_path(path: &str) -> bool {
     !path.is_empty()
         && !path.contains('\\')
         && path.split('/').all(|segment| !segment.is_empty() && segment != "..")
+        && !path.ends_with("/.")
+        && path != "."
 }
 
 pub fn parse_binary_manifest(contents: &str) -> Result<PackageManifest, String> {

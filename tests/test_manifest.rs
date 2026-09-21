@@ -191,6 +191,16 @@ fn binary_manifest_accepts_source_relative_entrypoint_paths() {
 }
 
 #[test]
+fn binary_manifest_rejects_entrypoints_that_name_a_directory_with_dot_segment() {
+    for entrypoint in [".", "./", "dist/.", "./."] {
+        assert!(
+            parse_manifest(&binary_manifest_with_entrypoint(entrypoint)).is_err(),
+            "{entrypoint:?}"
+        );
+    }
+}
+
+#[test]
 fn binary_manifest_rejects_traversal_absolute_and_empty_entrypoints() {
     for entrypoint in ["", "/bin/sh", "../outside", "dist/../../outside", "dist/..", "..", "dist//x", "dist/", "C:\\\\x", "dist\\\\x"] {
         assert!(

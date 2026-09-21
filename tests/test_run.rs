@@ -268,6 +268,26 @@ fn run_uses_manifest_entrypoint_instead_of_package_name() {
     fs::remove_dir_all(state_home).unwrap();
 }
 
+#[cfg(unix)]
+#[test]
+fn installed_binary_with_nested_entrypoint_installs_and_runs() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = temporary_state();
+    let state_home = project.join("state");
+    fs::write(project.join("mcpctl.toml"), "name = \"nested-mcp\"\nversion = \"1.0.0\"\n[runtime]\ntype = \"binary\"\n[install]\nentrypoint = \"dist/nested-mcp\"\n").unwrap();
+    fs::create_dir_all(project.join("dist")).unwrap();
+    fs::write(project.join("dist/nested-mcp"), "#!/bin/sh\nprintf nested\n").unwrap();
+    fs::set_permissions(project.join("dist/nested-mcp"), fs::Permissions::from_mode(0o755)).unwrap();
+
+    let install = Command::new(env!("CARGO_BIN_EXE_mcp-cli")).args(["install", project.to_str().unwrap()]).env("MCPCTL_HOME", &state_home).output().unwrap();
+    assert!(install.status.success(), "{}", String::from_utf8_lossy(&install.stderr));
+    let run = Command::new(env!("CARGO_BIN_EXE_mcp-cli")).args(["run", "nested-mcp"]).env("MCPCTL_HOME", &state_home).output().unwrap();
+
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(run.stdout, b"nested");
+    fs::remove_dir_all(project).unwrap();
+}
+
 #[test]
 fn run_rejects_path_components_in_package_selector() {
     let state_home = temporary_state();

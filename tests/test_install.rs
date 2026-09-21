@@ -433,6 +433,51 @@ fn reinstalling_existing_name_and_version_fails_and_preserves_installed_source()
     fs::remove_dir_all(project).unwrap();
 }
 
+#[cfg(unix)]
+#[test]
+fn binary_registry_failure_rolls_back_installed_version() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = temporary_project();
+    let state_home = project.join("state");
+    fs::create_dir_all(&state_home).unwrap();
+    fs::write(state_home.join("registry.json"), "{ invalid").unwrap();
+    fs::write(project.join("mcpctl.toml"), "name = \"binary-mcp\"\nversion = \"1.0.0\"\n[runtime]\ntype = \"binary\"\n[install]\nentrypoint = \"binary-mcp\"\n").unwrap();
+    fs::write(project.join("binary-mcp"), "#!/bin/sh\n").unwrap();
+    fs::set_permissions(project.join("binary-mcp"), fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mcp-cli")).args(["install", project.to_str().unwrap()]).env("MCPCTL_HOME", &state_home).env("PATH", "").output().unwrap();
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot record installation"));
+    assert!(!state_home.join("packages/binary-mcp/1.0.0").exists());
+    assert_eq!(fs::read_to_string(state_home.join("registry.json")).unwrap(), "{ invalid");
+    fs::remove_dir_all(project).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_binary_install_cleans_up_so_retry_succeeds() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = temporary_project();
+    let state_home = project.join("state");
+    fs::write(project.join("mcpctl.toml"), "name = \"binary-mcp\"\nversion = \"1.0.0\"\n[runtime]\ntype = \"binary\"\n[install]\nentrypoint = \"binary-mcp\"\n").unwrap();
+    fs::write(project.join("binary-mcp"), "#!/bin/sh\nprintf ok\n").unwrap();
+    fs::set_permissions(project.join("binary-mcp"), fs::Permissions::from_mode(0o755)).unwrap();
+    let unreadable = project.join("unreadable");
+    fs::create_dir(&unreadable).unwrap();
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+    let install = || Command::new(env!("CARGO_BIN_EXE_mcp-cli")).args(["install", project.to_str().unwrap()]).env("MCPCTL_HOME", &state_home).env("PATH", "").output().unwrap();
+
+    let failed = install();
+    assert!(!failed.status.success());
+    assert!(!state_home.join("packages/binary-mcp/1.0.0").exists(), "partial install left behind");
+
+    fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o755)).unwrap();
+    let retry = install();
+    assert!(retry.status.success(), "{}", String::from_utf8_lossy(&retry.stderr));
+    fs::remove_dir_all(project).unwrap();
+}
+
 #[test]
 fn binary_install_rejects_absolute_entrypoint_path() {
     let project = temporary_project();

@@ -91,6 +91,32 @@ fn use_rejects_invalid_package_selector() {
 
 #[cfg(unix)]
 #[test]
+fn uninstall_restores_registry_entry_when_directory_removal_fails() {
+    use std::os::unix::fs::PermissionsExt;
+    let state = temporary_state();
+    let package_dir = state.join("packages/alpha");
+    fs::create_dir_all(package_dir.join("1.0.0")).unwrap();
+    fs::write(package_dir.join("1.0.0/marker"), "x").unwrap();
+    let registry_path = state.join("registry.json");
+    let original = r#"{"schema_version":1,"packages":{"alpha":{"active_version":"1.0.0","versions":[{"version":"1.0.0","runtime":"python","source":"local","installed_at":"now"}]}}}"#;
+    fs::write(&registry_path, original).unwrap();
+    fs::set_permissions(&package_dir, fs::Permissions::from_mode(0o555)).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mcp-cli")).args(["uninstall", "alpha@1.0.0"]).env("MCPCTL_HOME", &state).output().unwrap();
+
+    fs::set_permissions(&package_dir, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!output.status.success());
+    assert!(package_dir.join("1.0.0").exists());
+    let registry = mcp_cli::registry::load_registry(&registry_path).unwrap();
+    assert_eq!(registry.packages["alpha"].versions.len(), 1, "registry entry lost while files remain");
+    let retry = Command::new(env!("CARGO_BIN_EXE_mcp-cli")).args(["uninstall", "alpha@1.0.0"]).env("MCPCTL_HOME", &state).output().unwrap();
+    assert!(retry.status.success(), "{}", String::from_utf8_lossy(&retry.stderr));
+    assert!(!package_dir.join("1.0.0").exists());
+    fs::remove_dir_all(state).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn uninstall_keeps_package_files_when_registry_save_fails() {
     use std::os::unix::fs::PermissionsExt;
     let state = temporary_state(); let package = state.join("packages/alpha/1.0.0"); fs::create_dir_all(&package).unwrap();
