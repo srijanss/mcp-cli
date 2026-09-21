@@ -31,7 +31,7 @@ fn install_package(project: &str) {
     }
     if matches!(manifest.runtime, mcp_cli::manifest::Runtime::Binary) {
         let binary = std::path::Path::new(project).join(&manifest.install.entrypoint);
-        if !binary.is_file() { fatal(format!("Python MCPs and binary MCPs require an entrypoint: {}", binary.display())); }
+        if !binary.is_file() { fatal(format!("binary entrypoint not found (expected a file at {})", binary.display())); }
         #[cfg(unix)]
         if !std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&binary).unwrap_or_else(|error| fatal(error.to_string())).permissions()).eq(&0) {
             let mode = std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&binary).unwrap_or_else(|error| fatal(error.to_string())).permissions());
@@ -54,7 +54,7 @@ fn install_package(project: &str) {
         let extra = serde_json::json!({ "executable_sha256": executable_sha256 });
         if let Err(error) = write_install_metadata(&root, project, &package_name, &package_version, "binary", &manifest.install.entrypoint, extra) { abort_install(&root, format!("cannot write metadata: {error}")); }
         if let Err(error) = record_install(&state_home, &package_name, &package_version, "binary") { abort_install(&root, format!("cannot record installation: {error}")); }
-        if let Err(error) = write_active_selection_if_absent(&state_home, &package_name, &package_version) { fatal(format!("cannot write active selection: {error}")); }
+        if let Err(error) = write_active_selection_if_absent(&state_home, &package_name, &package_version) { abort_recorded_install(&state_home, &root, &package_name, &package_version, format!("cannot write active selection: {error}")); }
         return;
     }
     let mcp_cli::manifest::Runtime::Python { python } = manifest.runtime else { unreachable!() };
@@ -91,7 +91,7 @@ fn install_package(project: &str) {
         abort_install(&version_root, format!("cannot record installation: {error}"));
     }
     if let Err(error) = write_active_selection_if_absent(&state_home, &package_name, &package_version) {
-        fatal(format!("cannot write active selection: {error}"));
+        abort_recorded_install(&state_home, &version_root, &package_name, &package_version, format!("cannot write active selection: {error}"));
     }
 
 }
@@ -146,9 +146,13 @@ fn use_package(selector: &str) {
     let mut registry = mcp_cli::registry::load_registry(&registry_path).unwrap_or_else(|error| fatal(format!("cannot read registry: {error}")));
     let package = registry.packages.get_mut(name).unwrap_or_else(|| fatal(format!("{name} is not installed")));
     if !package.versions.iter().any(|installed| installed.version == version) { fatal(format!("{name}@{version} is not installed")); }
-    package.active_version = Some(version.to_owned());
-    mcp_cli::registry::save_registry(&registry_path, &registry).unwrap_or_else(|error| fatal(error));
+    let previous = package.active_version.replace(version.to_owned());
+    // The active file is authoritative, so write it first; a failure then leaves both files untouched.
     write_active_selection(&state_home, name, version).unwrap_or_else(|error| fatal(format!("cannot write active selection: {error}")));
+    if let Err(error) = mcp_cli::registry::save_registry(&registry_path, &registry) {
+        if let Some(previous) = previous { let _ = write_active_selection(&state_home, name, &previous); }
+        fatal(error);
+    }
 }
 
 fn uninstall_package(selector: &str) {
@@ -284,6 +288,21 @@ fn run_package(package: &str, arguments: &[String]) {
 
 /// Removes a partially created version directory (and its package directory if
 /// now empty) so a failed install never blocks a retry, then exits with `message`.
+/// Like `abort_install`, but for a failure after `record_install`: also drops the registry entry so
+/// a retry is not rejected as "already installed".
+fn abort_recorded_install(state_home: &std::path::Path, version_root: &std::path::Path, name: &str, version: &str, message: String) -> ! {
+    let path = state_home.join("registry.json");
+    if let Ok(mut registry) = mcp_cli::registry::load_registry(&path) {
+        if let Some(package) = registry.packages.get_mut(name) {
+            package.versions.retain(|installed| installed.version != version);
+            if package.active_version.as_deref() == Some(version) { package.active_version = None; }
+            if package.versions.is_empty() { registry.packages.remove(name); }
+        }
+        let _ = mcp_cli::registry::save_registry(&path, &registry);
+    }
+    abort_install(version_root, message)
+}
+
 fn abort_install(version_root: &std::path::Path, message: String) -> ! {
     let _ = std::fs::remove_dir_all(version_root);
     if let Some(package_dir) = version_root.parent() {

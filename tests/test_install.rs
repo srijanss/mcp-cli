@@ -95,7 +95,7 @@ fn unsupported_runtime_is_rejected_without_snapshot() {
         .unwrap();
 
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("Python MCPs"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("binary entrypoint not found"));
     assert!(!state_home.join("packages/binary-mcp/1.0.0").exists());
 
     fs::remove_dir_all(project).unwrap();
