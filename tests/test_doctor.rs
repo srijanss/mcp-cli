@@ -35,10 +35,10 @@ fn doctor_reports_error_for_missing_entrypoint() {
 fn doctor_accepts_python_virtual_environment_without_package_entrypoint() {
     let state = state();
     fs::write(state.join("registry.json"), r#"{"schema_version":1,"packages":{"python-mcp":{"active_version":"1.0.0","versions":[{"version":"1.0.0","runtime":"python","source":"local","installed_at":"now"}]}}}"#).unwrap();
-    let root = state.join("packages/python-mcp/1.0.0"); fs::create_dir_all(root.join("source")).unwrap(); fs::create_dir_all(root.join("runtime/bin")).unwrap();
+    let root = state.join("packages/python-mcp/1.0.0"); fs::create_dir_all(root.join("source")).unwrap(); fs::create_dir_all(root.join("runtime/.venv/bin")).unwrap();
     fs::write(root.join("source/mcpctl.toml"), "name = \"python-mcp\"\nversion = \"1.0.0\"\n[runtime]\ntype = \"python\"\npython = \">=3.12\"\n[install]\nstrategy = \"uv\"\nentrypoint = \"python-mcp\"\n").unwrap();
-    fs::write(root.join("runtime/bin/python"), "#!/bin/sh\n").unwrap();
-    #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; fs::set_permissions(root.join("runtime/bin/python"), fs::Permissions::from_mode(0o755)).unwrap(); }
+    fs::write(root.join("runtime/.venv/bin/python"), "#!/bin/sh\n").unwrap();
+    #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; fs::set_permissions(root.join("runtime/.venv/bin/python"), fs::Permissions::from_mode(0o755)).unwrap(); }
     let output = Command::new(env!("CARGO_BIN_EXE_mcp-cli")).arg("doctor").env("MCPCTL_HOME", &state).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout)); fs::remove_dir_all(state).unwrap();
 }

@@ -13,7 +13,7 @@ fn temporary_state() -> PathBuf {
 
 fn install_fixture(state_home: &std::path::Path, version: &str, output: &str) {
     let package = state_home.join("packages/example-mcp").join(version);
-    let bin = package.join("runtime/bin");
+    let bin = package.join("runtime/.venv/bin");
     fs::create_dir_all(&bin).unwrap();
     fs::create_dir_all(package.join("source")).unwrap();
     fs::write(package.join("source/mcpctl.toml"), format!("name = \"example-mcp\"\nversion = \"{version}\"\n[runtime]\ntype = \"python\"\npython = \">=3.12\"\n[install]\nstrategy = \"uv\"\nentrypoint = \"example-mcp\"\n")).unwrap();
@@ -79,7 +79,7 @@ fn run_forwards_arguments_stdout_stderr_and_exit_status() {
     let state_home = temporary_state();
     install_fixture(&state_home, "1.0.0", "");
     fs::write(
-        state_home.join("packages/example-mcp/1.0.0/runtime/bin/example-mcp"),
+        state_home.join("packages/example-mcp/1.0.0/runtime/.venv/bin/example-mcp"),
         "#!/bin/sh\nprintf 'child:%s' \"$1\"\nprintf 'child error' >&2\nexit 7\n",
     )
     .unwrap();
@@ -87,7 +87,7 @@ fn run_forwards_arguments_stdout_stderr_and_exit_status() {
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(
-            state_home.join("packages/example-mcp/1.0.0/runtime/bin/example-mcp"),
+            state_home.join("packages/example-mcp/1.0.0/runtime/.venv/bin/example-mcp"),
             fs::Permissions::from_mode(0o755),
         )
         .unwrap();
@@ -115,7 +115,7 @@ fn run_forwards_stdin_to_child() {
     let state_home = temporary_state();
     install_fixture(&state_home, "1.0.0", "");
     fs::write(
-        state_home.join("packages/example-mcp/1.0.0/runtime/bin/example-mcp"),
+        state_home.join("packages/example-mcp/1.0.0/runtime/.venv/bin/example-mcp"),
         "#!/bin/sh\ncat\n",
     )
     .unwrap();
@@ -123,7 +123,7 @@ fn run_forwards_stdin_to_child() {
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(
-            state_home.join("packages/example-mcp/1.0.0/runtime/bin/example-mcp"),
+            state_home.join("packages/example-mcp/1.0.0/runtime/.venv/bin/example-mcp"),
             fs::Permissions::from_mode(0o755),
         )
         .unwrap();
@@ -156,14 +156,14 @@ fn run_preserves_caller_context_and_clears_python_virtual_environment() {
     fs::create_dir(&working_directory).unwrap();
     install_fixture(&state_home, "1.0.0", "");
     fs::write(
-        state_home.join("packages/example-mcp/1.0.0/runtime/bin/example-mcp"),
+        state_home.join("packages/example-mcp/1.0.0/runtime/.venv/bin/example-mcp"),
         "#!/bin/sh\nprintf '%s|%s|%s|%s' \"$PWD\" \"$CALLER_CONTEXT\" \"${VIRTUAL_ENV-unset}\" \"${PYTHONHOME-unset}\"\n",
     )
     .unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(state_home.join("packages/example-mcp/1.0.0/runtime/bin/example-mcp"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(state_home.join("packages/example-mcp/1.0.0/runtime/.venv/bin/example-mcp"), fs::Permissions::from_mode(0o755)).unwrap();
     }
     fs::write(state_home.join("registry.json"), r#"{"schema_version":1,"packages":{"example-mcp":{"active_version":"1.0.0","versions":[{"version":"1.0.0","runtime":"python","source":"local","installed_at":"now"}]}}}"#).unwrap();
 
@@ -186,8 +186,8 @@ fn run_preserves_caller_context_and_clears_python_virtual_environment() {
 fn run_does_not_inherit_virtual_env() {
     let state_home = temporary_state();
     install_fixture(&state_home, "1.0.0", "");
-    fs::write(state_home.join("packages/example-mcp/1.0.0/runtime/bin/example-mcp"), "#!/bin/sh\nprintf '%s' \"${VIRTUAL_ENV-set}\"\n").unwrap();
-    #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; fs::set_permissions(state_home.join("packages/example-mcp/1.0.0/runtime/bin/example-mcp"), fs::Permissions::from_mode(0o755)).unwrap(); }
+    fs::write(state_home.join("packages/example-mcp/1.0.0/runtime/.venv/bin/example-mcp"), "#!/bin/sh\nprintf '%s' \"${VIRTUAL_ENV-set}\"\n").unwrap();
+    #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; fs::set_permissions(state_home.join("packages/example-mcp/1.0.0/runtime/.venv/bin/example-mcp"), fs::Permissions::from_mode(0o755)).unwrap(); }
     fs::write(state_home.join("registry.json"), r#"{"schema_version":1,"packages":{"example-mcp":{"active_version":"1.0.0","versions":[{"version":"1.0.0","runtime":"python","source":"local","installed_at":"now"}]}}}"#).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_mcp-cli")).args(["run", "example-mcp"]).env("MCPCTL_HOME", &state_home).env("VIRTUAL_ENV", "/wrong/venv").output().unwrap();
     assert_eq!(output.stdout, b"set");
@@ -256,11 +256,11 @@ fn run_reports_missing_active_version() {
 fn run_uses_manifest_entrypoint_instead_of_package_name() {
     let state_home = temporary_state();
     let package = state_home.join("packages/example-mcp/1.0.0");
-    fs::create_dir_all(package.join("runtime/bin")).unwrap();
+    fs::create_dir_all(package.join("runtime/.venv/bin")).unwrap();
     fs::create_dir_all(package.join("source")).unwrap();
     fs::write(package.join("source/mcpctl.toml"), "name = \"example-mcp\"\nversion = \"1.0.0\"\n[runtime]\ntype = \"python\"\npython = \">=3.12\"\n[install]\nstrategy = \"uv\"\nentrypoint = \"custom-server\"\n").unwrap();
-    fs::write(package.join("runtime/bin/custom-server"), "#!/bin/sh\nprintf custom\n").unwrap();
-    #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; fs::set_permissions(package.join("runtime/bin/custom-server"), fs::Permissions::from_mode(0o755)).unwrap(); }
+    fs::write(package.join("runtime/.venv/bin/custom-server"), "#!/bin/sh\nprintf custom\n").unwrap();
+    #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; fs::set_permissions(package.join("runtime/.venv/bin/custom-server"), fs::Permissions::from_mode(0o755)).unwrap(); }
     fs::write(state_home.join("registry.json"), r#"{"schema_version":1,"packages":{"example-mcp":{"active_version":"1.0.0","versions":[{"version":"1.0.0","runtime":"python","source":"local","installed_at":"now"}]}}}"#).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_mcp-cli")).args(["run", "example-mcp"]).env("MCPCTL_HOME", &state_home).output().unwrap();
     assert!(output.status.success());
@@ -309,9 +309,9 @@ fn run_rejects_path_separator_in_version() {
 fn run_prepends_selected_runtime_bin_to_path() {
     let state_home = temporary_state();
     install_fixture(&state_home, "1.0.0", "");
-    fs::write(state_home.join("packages/example-mcp/1.0.0/runtime/bin/example-mcp"), "#!/bin/sh\nhelper\n").unwrap();
-    fs::write(state_home.join("packages/example-mcp/1.0.0/runtime/bin/helper"), "#!/bin/sh\nprintf helper-found\n").unwrap();
-    #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; for file in ["example-mcp", "helper"] { fs::set_permissions(state_home.join("packages/example-mcp/1.0.0/runtime/bin").join(file), fs::Permissions::from_mode(0o755)).unwrap(); } }
+    fs::write(state_home.join("packages/example-mcp/1.0.0/runtime/.venv/bin/example-mcp"), "#!/bin/sh\nhelper\n").unwrap();
+    fs::write(state_home.join("packages/example-mcp/1.0.0/runtime/.venv/bin/helper"), "#!/bin/sh\nprintf helper-found\n").unwrap();
+    #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; for file in ["example-mcp", "helper"] { fs::set_permissions(state_home.join("packages/example-mcp/1.0.0/runtime/.venv/bin").join(file), fs::Permissions::from_mode(0o755)).unwrap(); } }
     fs::write(state_home.join("registry.json"), r#"{"schema_version":1,"packages":{"example-mcp":{"active_version":"1.0.0","versions":[{"version":"1.0.0","runtime":"python","source":"local","installed_at":"now"}]}}}"#).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_mcp-cli")).args(["run", "example-mcp"]).env("MCPCTL_HOME", &state_home).env("PATH", "/usr/bin:/bin").output().unwrap();
     assert!(output.status.success());

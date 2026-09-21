@@ -36,7 +36,19 @@ impl Registry {
 
 pub fn save_registry(path: &Path, registry: &Registry) -> Result<(), String> {
     let contents = serde_json::to_string_pretty(registry).map_err(|error| error.to_string())?;
-    std::fs::write(path, contents).map_err(|error| error.to_string())
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(format!(".tmp-{}", std::process::id()));
+    let temporary = std::path::PathBuf::from(temporary);
+    let written = std::fs::File::create(&temporary)
+        .and_then(|mut file| {
+            std::io::Write::write_all(&mut file, contents.as_bytes())?;
+            file.sync_all()
+        })
+        .and_then(|()| std::fs::rename(&temporary, path));
+    written.map_err(|error| {
+        let _ = std::fs::remove_file(&temporary);
+        error.to_string()
+    })
 }
 
 pub fn load_registry(path: &Path) -> Result<Registry, String> {

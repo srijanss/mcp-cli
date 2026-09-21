@@ -213,7 +213,7 @@ fn python_install_creates_uv_isolated_runtime_outside_project() {
     fs::create_dir_all(&bin).unwrap();
     fs::write(
         bin.join("uv"),
-        "#!/bin/sh\nif [ \"$1\" = \"venv\" ]; then /bin/mkdir -p \"$2\"; fi\nexit 0\n",
+        "#!/bin/sh\nif [ \"$1\" = \"sync\" ]; then /bin/mkdir -p \"$UV_PROJECT_ENVIRONMENT\"; fi\nexit 0\n",
     )
     .unwrap();
     #[cfg(unix)]
@@ -230,7 +230,7 @@ fn python_install_creates_uv_isolated_runtime_outside_project() {
         .unwrap()
         .success());
     assert!(state_home
-        .join("packages/example-mcp/1.0.0/runtime")
+        .join("packages/example-mcp/1.0.0/runtime/.venv")
         .is_dir());
     assert!(!project.join(".venv").exists());
 
@@ -246,7 +246,7 @@ fn python_install_installs_snapshot_dependencies_into_its_isolated_runtime() {
     fs::create_dir_all(&bin).unwrap();
     fs::write(
         bin.join("uv"),
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$UV_LOG\"\nif [ \"$1\" = \"venv\" ]; then /bin/mkdir -p \"$2/bin\"; /usr/bin/touch \"$2/bin/python\"; fi\nexit 0\n",
+        "#!/bin/sh\nprintf '%s env=%s\\n' \"$*\" \"$UV_PROJECT_ENVIRONMENT\" >> \"$UV_LOG\"\nexit 0\n",
     )
     .unwrap();
     #[cfg(unix)]
@@ -264,10 +264,12 @@ fn python_install_installs_snapshot_dependencies_into_its_isolated_runtime() {
         .unwrap()
         .success());
 
-    let runtime = state_home.join("packages/example-mcp/1.0.0/runtime/bin/python");
-    let snapshot = state_home.join("packages/example-mcp/1.0.0/source");
+    let venv = state_home.join("packages/example-mcp/1.0.0/runtime/.venv");
     let log_contents = fs::read_to_string(log).unwrap();
-    assert!(log_contents.contains(&format!("pip install --python {} {}", runtime.display(), snapshot.display())));
+    assert!(
+        log_contents.lines().any(|line| line.starts_with("sync --frozen --no-dev") && line.ends_with(&format!("env={}", venv.display()))),
+        "uv log was:\n{log_contents}"
+    );
     fs::remove_dir_all(project).unwrap();
 }
 
@@ -309,7 +311,7 @@ fn failed_python_install_leaves_no_installed_or_active_state() {
     fs::create_dir_all(&bin).unwrap();
     fs::write(
         bin.join("uv"),
-        "#!/bin/sh\nif [ \"$1\" = \"venv\" ]; then exit 7; fi\nexit 0\n",
+        "#!/bin/sh\nif [ \"$1\" = \"sync\" ]; then exit 7; fi\nexit 0\n",
     )
     .unwrap();
     #[cfg(unix)]
@@ -334,12 +336,12 @@ fn failed_python_install_leaves_no_installed_or_active_state() {
 }
 
 #[test]
-fn pip_install_failure_removes_all_package_state() {
+fn uv_sync_failure_removes_all_package_state() {
     let project = temporary_project();
     let state_home = project.join("state");
     let bin = project.join("bin");
     fs::create_dir_all(&bin).unwrap();
-    fs::write(bin.join("uv"), "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"venv\" ]; then /bin/mkdir -p \"$2/bin\"; exit 0; fi\nexit 7\n").unwrap();
+    fs::write(bin.join("uv"), "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$1\" = \"sync\" ]; then /bin/mkdir -p \"$UV_PROJECT_ENVIRONMENT/bin\"; exit 7; fi\nexit 0\n").unwrap();
     #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; fs::set_permissions(bin.join("uv"), fs::Permissions::from_mode(0o755)).unwrap(); }
     let output = Command::new(env!("CARGO_BIN_EXE_mcp-cli")).args(["install", project.to_str().unwrap()]).env("MCPCTL_HOME", &state_home).env("PATH", &bin).output().unwrap();
     assert!(!output.status.success());

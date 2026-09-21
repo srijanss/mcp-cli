@@ -121,8 +121,13 @@ fn uninstall_keeps_package_files_when_registry_save_fails() {
     use std::os::unix::fs::PermissionsExt;
     let state = temporary_state(); let package = state.join("packages/alpha/1.0.0"); fs::create_dir_all(&package).unwrap();
     let registry_path = state.join("registry.json"); fs::write(&registry_path, r#"{"schema_version":1,"packages":{"alpha":{"active_version":"1.0.0","versions":[{"version":"1.0.0","runtime":"python","source":"local","installed_at":"now"}]}}}"#).unwrap();
-    fs::set_permissions(&registry_path, fs::Permissions::from_mode(0o444)).unwrap();
+    // The registry is replaced by rename, so a read-only file no longer blocks a save; an unwritable
+    // state directory does (the temp file cannot be created). Pre-create the lock so locking succeeds.
+    fs::write(state.join("mcpctl.lock"), "").unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o555)).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_mcp-cli")).args(["uninstall", "alpha@1.0.0"]).env("MCPCTL_HOME", &state).output().unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o755)).unwrap();
     assert!(!output.status.success()); assert!(package.exists());
-    fs::set_permissions(&registry_path, fs::Permissions::from_mode(0o644)).unwrap(); fs::remove_dir_all(state).unwrap();
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Permission denied"), "{}", String::from_utf8_lossy(&output.stderr));
+    fs::remove_dir_all(state).unwrap();
 }
