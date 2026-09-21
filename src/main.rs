@@ -103,9 +103,8 @@ fn update_package(name: &str, source: &str) {
         .and_then(|contents| mcp_cli::manifest::parse_manifest(&contents))
         .unwrap_or_else(|error| fatal(format!("cannot read update source: {error}")));
     if manifest.name != name { fatal(format!("update source package {} does not match {name}", manifest.name)); }
-    let status = std::process::Command::new(std::env::current_exe().unwrap_or_else(|error| fatal(error.to_string())))
-        .args(["install", source]).status().unwrap_or_else(|error| fatal(format!("cannot install update: {error}")));
-    if !status.success() { std::process::exit(status.code().unwrap_or(1)); }
+    // Install failures exit the process (rolling themselves back) before `use` can touch the active version.
+    install_package(source);
     use_package(&format!("{name}@{}", manifest.version));
 }
 
