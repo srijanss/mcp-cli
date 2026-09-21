@@ -114,12 +114,31 @@ fn doctor() {
     let registry_path = state_home.join("registry.json");
     let registry = match mcp_cli::registry::load_registry(&registry_path) { Ok(registry) => registry, Err(error) => { println!("ERROR registry: {error}"); std::process::exit(1) } };
     let mut errors = 0;
+    let mut warnings = 0;
+    let probe = state_home.join(format!(".doctor-write-probe-{}", std::process::id()));
+    match std::fs::write(&probe, b"") {
+        Ok(()) => { let _ = std::fs::remove_file(&probe); }
+        Err(error) => { println!("ERROR data directory {} is not writable: {error}", state_home.display()); errors += 1; }
+    }
     for (name, package) in &registry.packages {
         if let Some(active) = &package.active_version {
             if !package.versions.iter().any(|version| &version.version == active) { println!("ERROR {name}: active version {active} is not installed"); errors += 1; }
+            // Older installs have no active file, so absence is only a warning; disagreement is an error.
+            match std::fs::read_to_string(state_home.join("active").join(format!("{name}.json"))) {
+                Err(_) => { println!("WARN {name}: no active file"); warnings += 1; }
+                Ok(contents) => match serde_json::from_str::<serde_json::Value>(&contents) {
+                    Ok(value) if value["version"].as_str() == Some(active.as_str()) => {}
+                    Ok(value) => { println!("ERROR {name}: active file selects {} but registry selects {active}", value["version"].as_str().unwrap_or("nothing")); errors += 1; }
+                    Err(error) => { println!("ERROR {name}: active file is unreadable: {error}"); errors += 1; }
+                },
+            }
         }
         for version in &package.versions {
             let root = state_home.join("packages").join(name).join(&version.version);
+            match std::fs::read_to_string(root.join("metadata.json")) {
+                Err(_) => { println!("WARN {name}@{}: no metadata.json", version.version); warnings += 1; }
+                Ok(contents) => if let Err(error) = serde_json::from_str::<serde_json::Value>(&contents) { println!("ERROR {name}@{}: metadata.json is unreadable: {error}", version.version); errors += 1; },
+            }
             let manifest_path = root.join("source/mcpctl.toml");
             let manifest = std::fs::read_to_string(&manifest_path).ok().and_then(|contents| mcp_cli::manifest::parse_manifest(&contents).ok());
             let Some(manifest) = manifest else { println!("ERROR {name}@{}: missing or invalid manifest", version.version); errors += 1; continue };
@@ -129,10 +148,24 @@ fn doctor() {
             };
             if !entrypoint.is_file() { println!("ERROR {name}@{}: missing entrypoint", version.version); errors += 1; continue }
             #[cfg(unix)]
-            if std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&entrypoint).unwrap().permissions()) & 0o111 == 0 { println!("ERROR {name}@{}: entrypoint is not executable", version.version); errors += 1; }
+            match std::fs::metadata(&entrypoint) {
+                Ok(metadata) if std::os::unix::fs::PermissionsExt::mode(&metadata.permissions()) & 0o111 == 0 => { println!("ERROR {name}@{}: entrypoint is not executable", version.version); errors += 1; }
+                Ok(_) => {}
+                Err(error) => { println!("ERROR {name}@{}: cannot read entrypoint: {error}", version.version); errors += 1; }
+            }
         }
     }
-    if errors == 0 { println!("OK: registry and installed entrypoints are healthy"); } else { std::process::exit(1); }
+    // Directories under packages/ that the registry does not know about.
+    for name_entry in std::fs::read_dir(state_home.join("packages")).into_iter().flatten().flatten() {
+        let name = name_entry.file_name().to_string_lossy().into_owned();
+        for version_entry in std::fs::read_dir(name_entry.path()).into_iter().flatten().flatten() {
+            let version = version_entry.file_name().to_string_lossy().into_owned();
+            if !registry.packages.get(&name).is_some_and(|package| package.versions.iter().any(|installed| installed.version == version)) {
+                println!("WARN {name}@{version}: orphaned directory not in the registry"); warnings += 1;
+            }
+        }
+    }
+    if errors == 0 { println!("OK: registry and installed entrypoints are healthy{}", if warnings > 0 { format!(" ({warnings} warning(s))") } else { String::new() }); } else { std::process::exit(1); }
 }
 
 fn use_package(selector: &str) {
