@@ -33,7 +33,7 @@ fn install_package(project: &str) {
         let binary = std::path::Path::new(project).join(&manifest.install.entrypoint);
         if !binary.is_file() { fatal(format!("binary entrypoint not found (expected a file at {})", binary.display())); }
         #[cfg(unix)]
-        if !std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&binary).unwrap_or_else(|error| fatal(error.to_string())).permissions()).eq(&0) {
+        {
             let mode = std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&binary).unwrap_or_else(|error| fatal(error.to_string())).permissions());
             if mode & 0o111 == 0 { fatal("binary entrypoint is not executable".to_owned()); }
         }
@@ -51,7 +51,7 @@ fn install_package(project: &str) {
         }
         std::fs::copy(&binary, &installed_binary).unwrap_or_else(|error| abort_install(&root, format!("cannot copy binary: {error}")));
         let executable_sha256 = std::fs::read(&installed_binary).map(|bytes| mcp_cli::metadata::sha256_hex(&bytes)).unwrap_or_else(|error| abort_install(&root, format!("cannot checksum binary: {error}")));
-        let extra = serde_json::json!({ "executable_sha256": executable_sha256 });
+        let extra = serde_json::json!({ "executable_sha256": executable_sha256, "platform": format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH) });
         if let Err(error) = write_install_metadata(&root, project, &package_name, &package_version, "binary", &manifest.install.entrypoint, extra) { abort_install(&root, format!("cannot write metadata: {error}")); }
         if let Err(error) = record_install(&state_home, &package_name, &package_version, "binary") { abort_install(&root, format!("cannot record installation: {error}")); }
         if let Err(error) = write_active_selection_if_absent(&state_home, &package_name, &package_version) { abort_recorded_install(&state_home, &root, &package_name, &package_version, format!("cannot write active selection: {error}")); }
