@@ -48,6 +48,34 @@ fn state_initialization_creates_registry_and_directories() {
 }
 
 #[test]
+fn state_initialization_writes_loadable_empty_registry() {
+    let state_home = temporary_state_home();
+    let _ = fs::remove_dir_all(&state_home);
+
+    ensure_state_layout(&state_home).unwrap();
+
+    let registry = mcp_cli::registry::load_registry(&state_home.join("registry.json")).unwrap();
+    assert_eq!(registry, mcp_cli::registry::Registry::new());
+
+    fs::remove_dir_all(state_home).unwrap();
+}
+
+#[test]
+fn state_initialization_preserves_existing_registry() {
+    let state_home = temporary_state_home();
+    let _ = fs::remove_dir_all(&state_home);
+    fs::create_dir_all(&state_home).unwrap();
+    let existing = r#"{"schema_version":1,"packages":{"x":{"active_version":null,"versions":[]}}}"#;
+    fs::write(state_home.join("registry.json"), existing).unwrap();
+
+    ensure_state_layout(&state_home).unwrap();
+
+    assert_eq!(fs::read_to_string(state_home.join("registry.json")).unwrap(), existing);
+
+    fs::remove_dir_all(state_home).unwrap();
+}
+
+#[test]
 fn state_initialization_rejects_registry_directory() {
     let state_home = temporary_state_home();
     let _ = fs::remove_dir_all(&state_home);

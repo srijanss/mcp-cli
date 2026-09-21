@@ -24,6 +24,9 @@ fn main() {
             .unwrap_or_else(|error| fatal(error));
             let package_name = manifest.name.clone();
             let package_version = manifest.version.clone();
+            if state_home.join("packages").join(&package_name).join(&package_version).exists() {
+                fatal(format!("{package_name}@{package_version} is already installed; installed versions are immutable"));
+            }
             if matches!(manifest.runtime, mcp_cli::manifest::Runtime::Binary) {
                 let binary = std::path::Path::new(project).join(&manifest.install.entrypoint);
                 if !binary.is_file() { fatal(format!("Python MCPs and binary MCPs require an entrypoint: {}", binary.display())); }
@@ -196,8 +199,12 @@ fn run_package(package: &str, arguments: &[String]) {
         std::env::var_os("MCPCTL_HOME").map(std::path::PathBuf::from),
     )
     .unwrap_or_else(|error| fatal(error));
-    let registry = mcp_cli::registry::load_registry(&state_home.join("registry.json"))
-        .unwrap_or_else(|_| fatal(format!("{name} is not installed")));
+    let registry_path = state_home.join("registry.json");
+    if !registry_path.exists() {
+        fatal(format!("{name} is not installed"));
+    }
+    let registry = mcp_cli::registry::load_registry(&registry_path)
+        .unwrap_or_else(|error| fatal(format!("cannot read registry: {error}")));
     let package = registry.packages.get(name).unwrap_or_else(|| fatal(format!("{name} is not installed")));
     let version = requested_version
         .map(str::to_owned)

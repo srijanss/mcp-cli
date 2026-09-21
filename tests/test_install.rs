@@ -404,6 +404,35 @@ fn binary_install_accepts_source_relative_entrypoint_path() {
     fs::remove_dir_all(project).unwrap();
 }
 
+#[cfg(unix)]
+#[test]
+fn reinstalling_existing_name_and_version_fails_and_preserves_installed_source() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = temporary_project();
+    let state_home = project.join("state");
+    fs::write(project.join("mcpctl.toml"), "name = \"binary-mcp\"\nversion = \"1.0.0\"\n[runtime]\ntype = \"binary\"\n[install]\nentrypoint = \"binary-mcp\"\n").unwrap();
+    fs::write(project.join("binary-mcp"), "#!/bin/sh\nprintf original\n").unwrap();
+    fs::set_permissions(project.join("binary-mcp"), fs::Permissions::from_mode(0o755)).unwrap();
+    let install = || Command::new(env!("CARGO_BIN_EXE_mcp-cli")).args(["install", project.to_str().unwrap()]).env("MCPCTL_HOME", &state_home).env("PATH", "").output().unwrap();
+
+    let first = install();
+    assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
+    let installed_source = state_home.join("packages/binary-mcp/1.0.0/source/binary-mcp");
+    let installed_runtime = state_home.join("packages/binary-mcp/1.0.0/runtime/bin/binary-mcp");
+    assert_eq!(fs::read_to_string(&installed_source).unwrap(), "#!/bin/sh\nprintf original\n");
+
+    fs::write(project.join("binary-mcp"), "#!/bin/sh\nprintf changed\n").unwrap();
+    let second = install();
+
+    let stderr = String::from_utf8_lossy(&second.stderr);
+    assert!(!second.status.success());
+    assert!(stderr.contains("already installed"), "{stderr}");
+    assert_eq!(fs::read_to_string(&installed_source).unwrap(), "#!/bin/sh\nprintf original\n");
+    assert_eq!(fs::read_to_string(&installed_runtime).unwrap(), "#!/bin/sh\nprintf original\n");
+    assert_eq!(load_registry(&state_home.join("registry.json")).unwrap().packages["binary-mcp"].versions.len(), 1);
+    fs::remove_dir_all(project).unwrap();
+}
+
 #[test]
 fn binary_install_rejects_absolute_entrypoint_path() {
     let project = temporary_project();

@@ -210,6 +210,40 @@ fn run_rejects_empty_explicit_version_with_clear_diagnostic() {
 }
 
 #[test]
+fn run_surfaces_corrupt_registry_instead_of_reporting_not_installed() {
+    let state_home = temporary_state();
+    fs::write(state_home.join("registry.json"), "{ invalid json").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mcp-cli"))
+        .args(["run", "example-mcp"])
+        .env("MCPCTL_HOME", &state_home)
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("invalid registry"), "{stderr}");
+    assert!(!stderr.contains("not installed"), "{stderr}");
+    assert_eq!(fs::read_to_string(state_home.join("registry.json")).unwrap(), "{ invalid json");
+    fs::remove_dir_all(state_home).unwrap();
+}
+
+#[test]
+fn run_reports_not_installed_when_registry_is_missing() {
+    let state_home = temporary_state();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mcp-cli"))
+        .args(["run", "example-mcp"])
+        .env("MCPCTL_HOME", &state_home)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not installed"));
+    fs::remove_dir_all(state_home).unwrap();
+}
+
+#[test]
 fn run_reports_missing_active_version() {
     let state_home = temporary_state();
     fs::write(state_home.join("registry.json"), r#"{"schema_version":1,"packages":{"example-mcp":{"active_version":null,"versions":[]}}}"#).unwrap();

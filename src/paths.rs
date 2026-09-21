@@ -54,7 +54,8 @@ pub fn ensure_state_layout(state_home: &std::path::Path) -> std::io::Result<()> 
         ));
     }
     if !registry_path.exists() {
-        std::fs::write(registry_path, "{}\n")?;
+        crate::registry::save_registry(&registry_path, &crate::registry::Registry::new())
+            .map_err(std::io::Error::other)?;
     }
 
     Ok(())
