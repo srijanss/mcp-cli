@@ -138,6 +138,7 @@ agent instructions, hooks, a config template. Declare them in the MCP's own
 [scaffold]
 dirs = [".agents", ".claude"]                  # copied recursively, same path in the project
 exclude = [".claude/settings.local.json"]      # source paths skipped by the `dirs` copies
+requires = ["jq"]                              # executables the files rely on; init warns if missing from PATH
 
 [[scaffold.files]]                             # explicit source -> destination mapping
 from = ".mcp.json.example"
@@ -189,6 +190,10 @@ mcpctl init notes-mcp@1.0.0 ./app    # a specific version, into ./app
 - `exclude` only filters `dirs`; a file named in `files` is always copied.
   This lets an MCP keep its own development config next to a
   consumer-facing `.example` copy of it.
+- `requires` lists bare executable names (no path separators). After the
+  copy, `init` prints `WARNING: <tool> is required by <mcp> but was not found
+  on PATH` for each one it cannot find. It only warns: files are still
+  copied and the exit status stays 0.
 - Every scaffold path must be relative and must not contain `..` (the
   manifest is rejected otherwise). `hints` are plain messages, so mcpctl
   itself stays independent of any one MCP's languages or tools.

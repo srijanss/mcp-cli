@@ -5,3 +5,4 @@
 .tdd-review-findings.json
 .tdd-session.log
 *.json.lock
+.project-mcp/index.db*

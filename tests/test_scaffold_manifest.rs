@@ -66,6 +66,17 @@ fn scaffold_paths_that_escape_the_package_or_target_are_rejected() {
 }
 
 #[test]
+fn scaffold_requires_lists_tools_and_rejects_path_like_names() {
+    let manifest = parse_manifest(&with_scaffold("[scaffold]\nrequires = [\"jq\", \"uv\"]\n")).unwrap();
+    assert_eq!(manifest.scaffold.unwrap().requires, ["jq", "uv"]);
+
+    for bad in ["", "bin/jq", "..", "a b"] {
+        let error = parse_manifest(&with_scaffold(&format!("[scaffold]\nrequires = [{bad:?}]\n"))).unwrap_err();
+        assert!(error.contains("requires"), "{bad:?} should be rejected, got: {error}");
+    }
+}
+
+#[test]
 fn scaffold_files_accept_a_json_or_toml_merge_mode_and_reject_anything_else() {
     let manifest = parse_manifest(&with_scaffold(
         r#"[[scaffold.files]]

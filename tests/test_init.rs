@@ -12,6 +12,7 @@ entrypoint = "scaf-mcp"
 [scaffold]
 dirs = [".agents"]
 exclude = [".agents/private.txt", "templates/mcp.json"]
+requires = ["mcpctl-fake-tool"]
 
 [[scaffold.files]]
 from = "templates/mcp.json"
@@ -77,6 +78,50 @@ fn installed_scaffold_mcp() -> (PathBuf, PathBuf) {
 
 fn init(state_home: &PathBuf, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_mcp-cli")).arg("init").args(args).env("MCPCTL_HOME", state_home).output().unwrap()
+}
+
+fn init_with_path(state_home: &PathBuf, args: &[&str], path: &PathBuf) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_mcp-cli")).arg("init").args(args).env("MCPCTL_HOME", state_home).env("PATH", path).output().unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn init_warns_about_each_required_tool_missing_from_path_but_still_succeeds() {
+    let (project, state_home) = installed_scaffold_mcp();
+    let target = temporary_dir("target");
+    let empty_path = temporary_dir("empty-path");
+
+    let output = init_with_path(&state_home, &["scaf-mcp", target.to_str().unwrap()], &empty_path);
+
+    assert!(output.status.success(), "a missing tool only warns, stderr was: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("WARNING: mcpctl-fake-tool is required by scaf-mcp but was not found on PATH"), "stdout was: {stdout}");
+    assert!(target.join(".mcp.json").exists(), "files are still copied");
+
+    fs::remove_dir_all(project).unwrap();
+    fs::remove_dir_all(target).unwrap();
+    fs::remove_dir_all(empty_path).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn init_does_not_warn_when_the_required_tool_is_an_executable_on_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let (project, state_home) = installed_scaffold_mcp();
+    let target = temporary_dir("target");
+    let bin = temporary_dir("bin");
+    fs::write(bin.join("mcpctl-fake-tool"), "#!/bin/sh\n").unwrap();
+    fs::set_permissions(bin.join("mcpctl-fake-tool"), fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = init_with_path(&state_home, &["scaf-mcp", target.to_str().unwrap()], &bin);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("WARNING"), "stdout was: {stdout}");
+
+    fs::remove_dir_all(project).unwrap();
+    fs::remove_dir_all(target).unwrap();
+    fs::remove_dir_all(bin).unwrap();
 }
 
 #[cfg(unix)]

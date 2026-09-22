@@ -21,6 +21,9 @@ pub struct Scaffold {
     pub exclude: Vec<String>,
     #[serde(default)]
     pub hints: Vec<ScaffoldHint>,
+    /// Executables the scaffolded files rely on; `init` warns about any missing from `PATH`.
+    #[serde(default)]
+    pub requires: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -97,6 +100,9 @@ pub fn parse_manifest(contents: &str) -> Result<PackageManifest, String> {
         );
     }
     if let Some(scaffold) = &manifest.scaffold {
+        if let Some(tool) = scaffold.requires.iter().find(|tool| tool.is_empty() || tool.contains(['/', '\\']) || tool.contains(char::is_whitespace) || matches!(tool.as_str(), "." | "..")) {
+            return Err(format!("scaffold requires entry {tool:?} must be a bare executable name"));
+        }
         let paths = scaffold.dirs.iter().chain(&scaffold.exclude)
             .chain(scaffold.files.iter().flat_map(|file| [&file.from, &file.to]))
             .chain(scaffold.hints.iter().filter_map(|hint| hint.when_exists.as_ref()));

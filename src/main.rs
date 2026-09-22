@@ -45,10 +45,21 @@ fn init_package(selector: &str, target: Option<&str>) {
         copy_scaffold_tree(&source, &target, relative, relative, &scaffold.exclude)
             .unwrap_or_else(|error| fatal(format!("cannot copy {dir}: {error}")));
     }
+    for tool in scaffold.requires.iter().filter(|tool| !on_path(tool)) {
+        println!("WARNING: {tool} is required by {name} but was not found on PATH");
+    }
     // A hint applies when it has no marker file, or its marker file exists in the target.
     for hint in scaffold.hints.iter().filter(|hint| hint.when_exists.as_ref().is_none_or(|marker| target.join(marker).exists())) {
         println!("{}", hint.message);
     }
+}
+
+/// True when `tool` is an executable file in one of the `PATH` directories.
+fn on_path(tool: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|dir| {
+        std::fs::metadata(dir.join(tool)).is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    }))
 }
 
 /// Merges a template into the file already at `destination`, never removing or changing what it holds.
