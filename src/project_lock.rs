@@ -2,7 +2,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::project::McpDeclaration;
+use crate::project::{McpDeclaration, ProjectManifest};
 
 const LOCK_VERSION: u32 = 1;
 
@@ -77,4 +77,14 @@ pub fn resolve_locked_mcp(declaration: &McpDeclaration, project_root: &Path) -> 
         source: declaration.source.clone(),
         manifest_digest: format!("sha256:{}", crate::metadata::sha256_hex(&manifest_bytes)),
     })
+}
+
+/// Resolves every MCP the project declares; local sources are re-read so the lock always reflects them.
+pub fn resolve_project_lock(manifest: &ProjectManifest, project_root: &Path) -> Result<ProjectLock, String> {
+    let mcp = manifest
+        .mcp
+        .iter()
+        .map(|declaration| resolve_locked_mcp(declaration, project_root))
+        .collect::<Result<_, _>>()?;
+    Ok(ProjectLock { version: LOCK_VERSION, mcp })
 }
