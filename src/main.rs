@@ -100,7 +100,13 @@ fn init_project() {
             .unwrap_or_else(|error| fatal(format!("{} is malformed: {error}", lock_path.display())))
     });
     let state_home = mcp_cli::paths::data_home_from(std::env::var_os("MCPCTL_HOME").map(std::path::PathBuf::from)).unwrap_or_else(|error| fatal(error));
-    let registry = mcp_cli::registry::load_registry(&state_home.join("registry.json")).unwrap_or_else(|error| fatal(format!("cannot read registry: {error}")));
+    let registry_path = state_home.join("registry.json");
+    // A state home that has never had an install has no registry yet: nothing is installed.
+    let registry = if registry_path.exists() {
+        mcp_cli::registry::load_registry(&registry_path).unwrap_or_else(|error| fatal(format!("cannot read registry: {error}")))
+    } else {
+        mcp_cli::registry::Registry { schema_version: 1, packages: Default::default() }
+    };
     // One MCP failing doesn't stop the rest; each failure is reported against the MCP that caused it.
     let mut failed = Vec::new();
     for declared in &manifest.mcp {

@@ -245,3 +245,23 @@ fn init_names_the_mcp_that_failed_and_still_initializes_the_rest() {
         "MCPs after the failing one are still initialized"
     );
 }
+
+#[test]
+fn init_on_a_state_home_with_nothing_installed_names_each_project_mcp_and_suggests_sync() {
+    let (workspace, project) = workspace_with_project();
+    let state_home = workspace.join("fresh-state");
+
+    let output = mcpctl(&project, &state_home, &["init"]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(!stderr.contains("cannot read registry"), "{stderr}");
+    assert!(stderr.contains("mcp 'project-mcp' is not installed; run `mcpctl sync`"), "{stderr}");
+    assert!(stderr.contains("mcp 'design-advisor-mcp' is not installed; run `mcpctl sync`"), "{stderr}");
+
+    fs::write(project.join(".mcpctl.toml"), "mcp = []\n\n[project]\nname = \"checkout-service\"\n").unwrap();
+
+    let empty = mcpctl(&project, &state_home, &["init"]);
+
+    assert!(empty.status.success(), "a project with no MCPs has nothing to initialize: {}", String::from_utf8_lossy(&empty.stderr));
+}
