@@ -272,3 +272,50 @@ fn setup_all_rerun_with_nothing_new_leaves_the_manifest_and_lock_untouched_and_r
     assert!(!stdout(&output).contains(".mcpctl.toml\n"), "stdout: {}", stdout(&output));
     assert!(!stdout(&output).contains(".mcpctl.lock\n"), "stdout: {}", stdout(&output));
 }
+
+#[test]
+fn setup_rerun_removes_deselected_catalog_mcps_from_the_manifest_and_lock_but_leaves_their_files() {
+    let (workspace, project, project_mcp, _) = workspace_with_catalog();
+    assert!(mcpctl(&workspace, &project, &["setup", "--all"]).status.success());
+    let installed_at = fs::metadata(workspace.join("state/packages/project-mcp/0.4.3")).unwrap().modified().unwrap();
+
+    let output = mcpctl(&workspace, &project, &["setup", "--mcp", "project-mcp"]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert!(
+        stdout(&output).contains("Removed design-advisor-mcp from .mcpctl.toml (scaffold files left in place)\n"),
+        "stdout: {}",
+        stdout(&output)
+    );
+    assert_eq!(
+        fs::read_to_string(project.join(".mcpctl.toml")).unwrap(),
+        format!(
+            "[project]\nname = \"checkout-service\"\n\n[[mcp]]\nname = \"project-mcp\"\nversion = \"^0.4.3\"\nsource = {:?}\n",
+            project_mcp.display().to_string()
+        )
+    );
+    let lock = mcp_cli::project_lock::parse_project_lock(&fs::read_to_string(project.join(".mcpctl.lock")).unwrap()).unwrap();
+    let locked: Vec<_> = lock.mcp.iter().map(|mcp| mcp.name.as_str()).collect();
+    assert_eq!(locked, ["project-mcp"]);
+    assert!(project.join("docs/design-advisor-mcp.md").exists());
+    assert!(workspace.join("state/packages/design-advisor-mcp/0.2.0").exists());
+    assert_eq!(fs::metadata(workspace.join("state/packages/project-mcp/0.4.3")).unwrap().modified().unwrap(), installed_at);
+}
+
+#[test]
+fn setup_rerun_keeps_project_mcps_the_catalog_does_not_offer() {
+    let (workspace, project, _, _) = workspace_with_catalog();
+    write_package(&workspace, "local-mcp", "local-mcp", "1.0.0");
+    let written = "[project]\nname = \"checkout-service\"\n\n[[mcp]]\nname = \"local-mcp\"\nversion = \"^1.0\"\nsource = \"../local-mcp\"\n";
+    fs::write(project.join(".mcpctl.toml"), written).unwrap();
+
+    let output = mcpctl(&workspace, &project, &["setup", "--mcp", "project-mcp"]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert!(!stdout(&output).contains("Removed"), "stdout: {}", stdout(&output));
+    let manifest = fs::read_to_string(project.join(".mcpctl.toml")).unwrap();
+    assert!(manifest.starts_with(written), "{manifest}");
+    let lock = mcp_cli::project_lock::parse_project_lock(&fs::read_to_string(project.join(".mcpctl.lock")).unwrap()).unwrap();
+    let locked: Vec<_> = lock.mcp.iter().map(|mcp| mcp.name.as_str()).collect();
+    assert_eq!(locked, ["local-mcp", "project-mcp"]);
+}

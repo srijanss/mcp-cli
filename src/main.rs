@@ -181,7 +181,7 @@ fn setup_project(all: bool, mcps: &[String]) {
     for (manifest, _) in &selected {
         println!("  {}", manifest.name);
     }
-    let manifest = write_setup_manifest(&root, &selected);
+    let manifest = write_setup_manifest(&root, &packages.available, &selected);
     println!("Resolving versions");
     let lock = mcp_cli::project_lock::resolve_project_lock(&manifest, &root).unwrap_or_else(|error| fatal(error));
     println!("Installing required MCPs");
@@ -203,8 +203,13 @@ fn setup_project(all: bool, mcps: &[String]) {
 }
 
 /// Writes the `.mcpctl.toml` setup leaves at `root` for the `selected` catalog MCPs and returns what it declares:
-/// a new manifest for a new project, or the existing one, kept as written, with newly selected MCPs appended.
-fn write_setup_manifest(root: &std::path::Path, selected: &[&(mcp_cli::manifest::PackageManifest, &str)]) -> mcp_cli::project::ProjectManifest {
+/// a new manifest for a new project, or the existing one with newly selected MCPs appended and deselected catalog
+/// MCPs removed. MCPs the catalog does not offer are never removed, since they could not have been selected.
+fn write_setup_manifest(
+    root: &std::path::Path,
+    available: &[(mcp_cli::manifest::PackageManifest, &str)],
+    selected: &[&(mcp_cli::manifest::PackageManifest, &str)],
+) -> mcp_cli::project::ProjectManifest {
     let manifest_path = root.join(".mcpctl.toml");
     let existing = match std::fs::read_to_string(&manifest_path) {
         Ok(contents) => Some(contents),
@@ -229,7 +234,6 @@ fn write_setup_manifest(root: &std::path::Path, selected: &[&(mcp_cli::manifest:
             write_manifest(mcp_cli::project::render_project_manifest(&manifest));
             manifest
         }
-        // The existing manifest is kept as written; newly selected MCPs are appended after it.
         Some(contents) => {
             let mut manifest = mcp_cli::project::parse_project_manifest(&contents)
                 .unwrap_or_else(|error| fatal(format!("{} is invalid: {error}", manifest_path.display())));
@@ -237,6 +241,23 @@ fn write_setup_manifest(root: &std::path::Path, selected: &[&(mcp_cli::manifest:
                 .filter(|(package, _)| !manifest.mcp.iter().any(|declared| declared.name == package.name))
                 .map(declare)
                 .collect();
+            let removed: Vec<_> = manifest.mcp.iter()
+                .filter(|declared| available.iter().any(|(package, _)| package.name == declared.name))
+                .filter(|declared| !selected.iter().any(|(package, _)| package.name == declared.name))
+                .map(|declared| declared.name.clone())
+                .collect();
+            if !removed.is_empty() {
+                // Removing entries means re-rendering; the kept entries' values are preserved as written.
+                manifest.mcp.retain(|declared| !removed.contains(&declared.name));
+                manifest.mcp.extend(added);
+                println!("Updating .mcpctl.toml");
+                write_manifest(mcp_cli::project::render_project_manifest(&manifest));
+                for name in removed {
+                    println!("Removed {name} from .mcpctl.toml (scaffold files left in place)");
+                }
+                return manifest;
+            }
+            // Otherwise the existing manifest is kept as written, with newly selected MCPs appended after it.
             if !added.is_empty() {
                 println!("Updating .mcpctl.toml");
                 let appended: String = added.iter().map(|declared| format!(
