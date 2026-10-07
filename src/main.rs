@@ -183,6 +183,16 @@ fn setup_project() {
     install_locked_mcps(&root, &lock);
     println!("Creating .mcpctl.lock");
     mcp_cli::project_lock::write_project_lock(&root, &lock).unwrap_or_else(|error| fatal(error));
+    println!("Applying scaffolds");
+    let (applied, failed) = scaffold_project(&root, &manifest);
+    println!("Checking requirements");
+    for (name, scaffold) in &applied {
+        warn_missing_requirements(name, scaffold);
+    }
+    if !failed.is_empty() {
+        fatal(format!("setup failed for {}", failed.join(", ")));
+    }
+    println!("Project MCP environment ready.");
 }
 
 /// The root and parsed `.mcpctl.toml` of the project containing the working directory; fatal outside a project.
@@ -277,6 +287,18 @@ fn verify_installed_entrypoint(version_root: &std::path::Path) -> Result<(), Str
 /// Scaffolds every MCP declared by the project containing the working directory into the project root.
 fn init_project() {
     let (root, manifest) = current_project();
+    let (applied, failed) = scaffold_project(&root, &manifest);
+    for (name, scaffold) in &applied {
+        warn_missing_requirements(name, scaffold);
+    }
+    if !failed.is_empty() {
+        fatal(format!("init failed for {}", failed.join(", ")));
+    }
+}
+
+/// Applies the scaffold of every MCP `manifest` declares to `root`, returning the scaffolds applied and the
+/// names of the MCPs that failed. One MCP failing doesn't stop the rest; each failure is reported as it happens.
+fn scaffold_project(root: &std::path::Path, manifest: &mcp_cli::project::ProjectManifest) -> (Vec<(String, mcp_cli::manifest::Scaffold)>, Vec<String>) {
     let lock_path = root.join(".mcpctl.lock");
     let lock = read_project_lock(&lock_path);
     let state_home = mcp_cli::paths::data_home_from(std::env::var_os("MCPCTL_HOME").map(std::path::PathBuf::from)).unwrap_or_else(|error| fatal(error));
@@ -301,13 +323,14 @@ fn init_project() {
         Ok((_, source, Some(scaffold))) => Some((*name, source.as_path(), scaffold)),
         _ => None,
     }));
-    // One MCP failing doesn't stop the rest; each failure is reported against the MCP that caused it.
-    let mut failed = Vec::new();
-    for (name, resolved) in &resolved {
-        let initialized = resolved.as_ref().map_err(String::clone).and_then(|(version, source, scaffold)| {
+    let (mut applied, mut failed) = (Vec::new(), Vec::new());
+    for (name, resolved) in resolved {
+        let initialized = resolved.and_then(|(version, source, scaffold)| {
             println!("Initializing {name}@{version}");
             match scaffold {
-                Some(scaffold) => apply_scaffold(name, source, scaffold, &root).map_err(|error| format!("{name}@{version}: {error}")),
+                Some(scaffold) => apply_scaffold(&source, &scaffold, root)
+                    .map(|()| applied.push((name.to_owned(), scaffold)))
+                    .map_err(|error| format!("{name}@{version}: {error}")),
                 None => {
                     println!("Skipping {name}@{version} (no [scaffold])");
                     Ok(())
@@ -316,11 +339,16 @@ fn init_project() {
         });
         if let Err(error) = initialized {
             eprintln!("{error}");
-            failed.push(*name);
+            failed.push(name.to_owned());
         }
     }
-    if !failed.is_empty() {
-        fatal(format!("init failed for {}", failed.join(", ")));
+    (applied, failed)
+}
+
+/// Warns about each tool `name`'s scaffold requires that is not on `PATH`.
+fn warn_missing_requirements(name: &str, scaffold: &mcp_cli::manifest::Scaffold) {
+    for tool in scaffold.requires.iter().filter(|tool| !on_path(tool)) {
+        println!("WARNING: {tool} is required by {name} but was not found on PATH");
     }
 }
 
@@ -398,7 +426,8 @@ fn init_package(selector: &str, target: Option<&std::path::Path>) {
     let (source, scaffold) = installed_scaffold(&state_home, name, &version).unwrap_or_else(|error| fatal(error));
     let scaffold = scaffold.unwrap_or_else(|| fatal(format!("{name}@{version} does not ship a scaffold")));
     let target = target.map(std::path::Path::to_path_buf).unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|error| fatal(error.to_string())));
-    apply_scaffold(name, &source, &scaffold, &target).unwrap_or_else(|error| fatal(error));
+    apply_scaffold(&source, &scaffold, &target).unwrap_or_else(|error| fatal(error));
+    warn_missing_requirements(name, &scaffold);
 }
 
 /// The source snapshot of an installed version and the `[scaffold]` its manifest declares, if any.
@@ -411,8 +440,8 @@ fn installed_scaffold(state_home: &std::path::Path, name: &str, version: &str) -
     Ok((source, manifest.scaffold))
 }
 
-/// Copies and merges `scaffold` from an installed `source` snapshot into `target`, then reports requirements and hints.
-fn apply_scaffold(name: &str, source: &std::path::Path, scaffold: &mcp_cli::manifest::Scaffold, target: &std::path::Path) -> Result<(), String> {
+/// Copies and merges `scaffold` from an installed `source` snapshot into `target`, then reports its hints.
+fn apply_scaffold(source: &std::path::Path, scaffold: &mcp_cli::manifest::Scaffold, target: &std::path::Path) -> Result<(), String> {
     // `exclude` filters the `dirs` copies only; a file named in `files` is always copied.
     for file in &scaffold.files {
         let destination = target.join(&file.to);
@@ -428,9 +457,6 @@ fn apply_scaffold(name: &str, source: &std::path::Path, scaffold: &mcp_cli::mani
         let relative = std::path::Path::new(dir);
         copy_scaffold_tree(source, target, relative, relative, &scaffold.exclude)
             .map_err(|error| format!("cannot copy {dir}: {error}"))?;
-    }
-    for tool in scaffold.requires.iter().filter(|tool| !on_path(tool)) {
-        println!("WARNING: {tool} is required by {name} but was not found on PATH");
     }
     // A hint applies when it has no marker file, or its marker file exists in the target.
     for hint in scaffold.hints.iter().filter(|hint| hint.when_exists.as_ref().is_none_or(|marker| target.join(marker).exists())) {

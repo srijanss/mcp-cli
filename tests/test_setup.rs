@@ -108,3 +108,36 @@ fn setup_with_an_empty_catalog_fails_suggesting_catalog_add_and_writes_nothing()
     assert!(stderr(&output).contains("Catalog is empty; add an MCP with: mcpctl catalog add <path>"), "stderr: {}", stderr(&output));
     assert_eq!(fs::read_dir(&project).unwrap().count(), 0);
 }
+
+#[test]
+fn setup_applies_every_selected_scaffold_then_checks_requirements() {
+    let (workspace, project, project_mcp, _) = workspace_with_catalog();
+    let manifest = fs::read_to_string(project_mcp.join("mcpctl.toml")).unwrap();
+    fs::write(project_mcp.join("mcpctl.toml"), manifest.replace("[scaffold]\n", "[scaffold]\nrequires = [\"mcpctl-fake-tool\"]\n")).unwrap();
+
+    let output = mcpctl(&workspace, &project, &["setup", "--all"]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        "Selected MCPs\n  design-advisor-mcp\n  project-mcp\nCreating .mcpctl.toml\nResolving versions\nInstalling required MCPs\nCreating .mcpctl.lock\n\
+         Applying scaffolds\nInitializing design-advisor-mcp@0.2.0\nCopied docs/design-advisor-mcp.md\nInitializing project-mcp@0.4.3\nCopied docs/project-mcp.md\n\
+         Checking requirements\nWARNING: mcpctl-fake-tool is required by project-mcp but was not found on PATH\n\
+         Project MCP environment ready.\n"
+    );
+    assert_eq!(fs::read_to_string(project.join("docs/project-mcp.md")).unwrap(), "project-mcp@0.4.3");
+    assert_eq!(fs::read_to_string(project.join("docs/design-advisor-mcp.md")).unwrap(), "design-advisor-mcp@0.2.0");
+}
+
+#[test]
+fn setup_fails_naming_each_mcp_whose_scaffold_cannot_be_applied() {
+    let (workspace, project, _, _) = workspace_with_catalog();
+    // A `docs` file where the scaffolds expect a directory makes every copy into `docs/` fail.
+    fs::write(project.join("docs"), "not a directory").unwrap();
+
+    let output = mcpctl(&workspace, &project, &["setup", "--all"]);
+
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("setup failed for design-advisor-mcp, project-mcp"), "stderr: {}", stderr(&output));
+    assert!(!stdout(&output).contains("Project MCP environment ready."), "stdout: {}", stdout(&output));
+}
