@@ -52,3 +52,11 @@ pub fn parse_project_manifest(contents: &str) -> Result<ProjectManifest, String>
     }
     Ok(manifest)
 }
+
+/// Walks up from `start` to the nearest directory holding `.mcpctl.toml`, stopping at the filesystem root.
+pub fn find_project_root(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .find(|dir| dir.join(".mcpctl.toml").is_file())
+        .map(Path::to_path_buf)
+}
