@@ -62,4 +62,6 @@ pub enum CatalogCommand {
         #[arg(value_name = "package path")]
         path: String,
     },
+    /// List the MCPs in the catalog
+    List,
 }

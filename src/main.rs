@@ -15,6 +15,7 @@ fn main() {
         Command::Init { package: None, .. } => init_project(),
         Command::Sync { locked } => sync_project(locked),
         Command::Catalog { command: CatalogCommand::Add { path } } => catalog_add(&path),
+        Command::Catalog { command: CatalogCommand::List } => catalog_list(),
     }
 }
 
@@ -70,6 +71,27 @@ fn catalog_add(path: &str) {
         .and_then(|()| std::fs::write(&catalog_path, mcp_cli::catalog::render_catalog(&catalog)))
         .unwrap_or_else(|error| fatal(format!("cannot write {}: {error}", catalog_path.display())));
     println!("Added {}@{} ({})", manifest.name, manifest.version, source.display());
+}
+
+fn catalog_list() {
+    let catalog = read_catalog(&config_home().join("catalog.toml"));
+    if catalog.mcp.is_empty() {
+        println!("Catalog is empty\nAdd an MCP with: mcpctl catalog add <path>");
+        return;
+    }
+    let mut manifests: Vec<_> = catalog.mcp.iter()
+        .filter_map(|entry| catalog_source_manifest(std::path::Path::new(&entry.source)).ok().map(|manifest| (manifest, &entry.source)))
+        .collect();
+    manifests.sort_by(|(left, _), (right, _)| left.name.cmp(&right.name));
+    for (manifest, source) in manifests {
+        let runtime = match manifest.runtime { mcp_cli::manifest::Runtime::Python { .. } => "python", mcp_cli::manifest::Runtime::Binary => "binary" };
+        let scaffold = if manifest.scaffold.is_some() { "scaffold" } else { "no scaffold" };
+        println!("{}@{} ({runtime}, {scaffold})", manifest.name, manifest.version);
+        if let Some(description) = &manifest.description {
+            println!("  {description}");
+        }
+        println!("  source: {source}");
+    }
 }
 
 /// The root and parsed `.mcpctl.toml` of the project containing the working directory; fatal outside a project.

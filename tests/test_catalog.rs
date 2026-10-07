@@ -153,3 +153,40 @@ fn catalog_add_fails_naming_both_sources_when_another_source_already_provides_th
     );
     assert_eq!(fs::read_to_string(workspace.join("config/catalog.toml")).unwrap(), catalog_before);
 }
+
+#[test]
+fn catalog_list_shows_each_mcps_metadata_sorted_by_name() {
+    let workspace = temporary_dir();
+    let project_mcp = write_package(&workspace, "project-mcp", "project-mcp", "0.4.3");
+    let design_advisor = write_package(&workspace, "design-advisor-mcp", "design-advisor-mcp", "0.2.0");
+    fs::write(
+        design_advisor.join("mcpctl.toml"),
+        "name = \"design-advisor-mcp\"\nversion = \"0.2.0\"\n\n[runtime]\ntype = \"binary\"\n\n[install]\nentrypoint = \"bin/design-advisor-mcp\"\n",
+    )
+    .unwrap();
+    assert!(mcpctl(&workspace, &workspace, &["catalog", "add", "project-mcp"]).status.success());
+    assert!(mcpctl(&workspace, &workspace, &["catalog", "add", "design-advisor-mcp"]).status.success());
+
+    let output = mcpctl(&workspace, &workspace, &["catalog", "list"]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        format!(
+            "design-advisor-mcp@0.2.0 (binary, no scaffold)\n  source: {}\n\
+             project-mcp@0.4.3 (binary, scaffold)\n  The project-mcp server\n  source: {}\n",
+            design_advisor.display(),
+            project_mcp.display()
+        )
+    );
+}
+
+#[test]
+fn catalog_list_of_an_empty_catalog_suggests_catalog_add() {
+    let workspace = temporary_dir();
+
+    let output = mcpctl(&workspace, &workspace, &["catalog", "list"]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output), "Catalog is empty\nAdd an MCP with: mcpctl catalog add <path>\n");
+}
