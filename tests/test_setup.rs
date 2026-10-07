@@ -190,3 +190,48 @@ fn setup_without_a_selection_off_a_terminal_fails_suggesting_all_or_mcp() {
     );
     assert_eq!(fs::read_dir(&project).unwrap().count(), 0);
 }
+
+#[test]
+fn setup_all_skips_unavailable_catalog_entries_with_a_warning_and_sets_up_the_rest() {
+    let (workspace, project, _, design_advisor) = workspace_with_catalog();
+    fs::remove_dir_all(&design_advisor).unwrap();
+
+    let output = mcpctl(&workspace, &project, &["setup", "--all"]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert!(
+        stdout(&output).starts_with(&format!(
+            "WARNING: skipping unavailable catalog entry {}: {} does not exist or is not a directory\nSelected MCPs\n  project-mcp\n",
+            design_advisor.display(),
+            design_advisor.display()
+        )),
+        "stdout: {}",
+        stdout(&output)
+    );
+    assert!(!fs::read_to_string(project.join(".mcpctl.toml")).unwrap().contains("design-advisor-mcp"));
+}
+
+#[test]
+fn setup_keeps_the_first_source_when_a_hand_edited_catalog_repeats_a_name() {
+    let (workspace, project, project_mcp, _) = workspace_with_catalog();
+    let fork = write_package(&workspace, "project-mcp-fork", "project-mcp", "9.9.9");
+    let catalog = fs::read_to_string(workspace.join("config/catalog.toml")).unwrap();
+    fs::write(workspace.join("config/catalog.toml"), format!("{catalog}\n[[mcp]]\nsource = {:?}\n", fork.display().to_string())).unwrap();
+
+    let output = mcpctl(&workspace, &project, &["setup", "--mcp", "project-mcp"]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert!(
+        stdout(&output).contains(&format!(
+            "WARNING: project-mcp is provided by both {} and {}; using {}\n",
+            project_mcp.display(),
+            fork.display(),
+            project_mcp.display()
+        )),
+        "stdout: {}",
+        stdout(&output)
+    );
+    let manifest = fs::read_to_string(project.join(".mcpctl.toml")).unwrap();
+    assert!(manifest.contains(&format!("source = {:?}", project_mcp.display().to_string())), "{manifest}");
+    assert!(!manifest.contains("9.9.9"), "{manifest}");
+}

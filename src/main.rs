@@ -119,7 +119,7 @@ fn catalog_list() {
         }
         println!("  source: {source}");
     }
-    for reason in packages.unavailable {
+    for (_, reason) in packages.unavailable {
         println!("unavailable: {reason}");
     }
     for duplicate in packages.duplicates {
@@ -130,7 +130,8 @@ fn catalog_list() {
 /// A catalog read against its sources: usable packages sorted by name, then why the rest were left out.
 struct CatalogPackages<'a> {
     available: Vec<(mcp_cli::manifest::PackageManifest, &'a str)>,
-    unavailable: Vec<String>,
+    /// Each unusable source with why it cannot be used, in catalog order.
+    unavailable: Vec<(&'a str, String)>,
     duplicates: Vec<String>,
 }
 
@@ -145,7 +146,7 @@ fn catalog_packages(catalog: &mcp_cli::catalog::Catalog) -> CatalogPackages<'_> 
                 )),
                 None => packages.available.push((manifest, entry.source.as_str())),
             },
-            Err(reason) => packages.unavailable.push(reason),
+            Err(reason) => packages.unavailable.push((entry.source.as_str(), reason)),
         }
     }
     packages.available.sort_by(|(left, _), (right, _)| left.name.cmp(&right.name));
@@ -166,6 +167,12 @@ fn setup_project(all: bool, mcps: &[String]) {
     if let Some(unknown) = mcps.iter().find(|name| !packages.available.iter().any(|(package, _)| &package.name == *name)) {
         let available: Vec<_> = packages.available.iter().map(|(package, _)| package.name.as_str()).collect();
         fatal(format!("{unknown} is not an available catalog MCP; available: {}", available.join(", ")));
+    }
+    for (source, reason) in &packages.unavailable {
+        println!("WARNING: skipping unavailable catalog entry {source}: {reason}");
+    }
+    for duplicate in &packages.duplicates {
+        println!("WARNING: {duplicate}");
     }
     let selected: Vec<_> = packages.available.iter().filter(|(package, _)| all || mcps.contains(&package.name)).collect();
     let root = std::env::current_dir().unwrap_or_else(|error| fatal(format!("cannot read current directory: {error}")));
