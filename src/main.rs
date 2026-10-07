@@ -360,11 +360,13 @@ fn list_packages() {
 }
 
 /// The version of `name` pinned by the `.mcpctl.lock` of the project containing the working directory.
-fn project_locked_version(name: &str) -> Option<String> {
+/// Returns the pinned version together with the lock file that pins it.
+fn project_locked_version(name: &str) -> Option<(String, std::path::PathBuf)> {
     let root = mcp_cli::project::find_project_root(&std::env::current_dir().ok()?)?;
-    let contents = std::fs::read_to_string(root.join(".mcpctl.lock")).ok()?;
+    let lock_path = root.join(".mcpctl.lock");
+    let contents = std::fs::read_to_string(&lock_path).ok()?;
     let lock = mcp_cli::project_lock::parse_project_lock(&contents).ok()?;
-    lock.mcp.into_iter().find(|locked| locked.name == name).map(|locked| locked.version)
+    lock.mcp.into_iter().find(|locked| locked.name == name).map(|locked| (locked.version, lock_path))
 }
 
 fn run_package(package: &str, arguments: &[String]) {
@@ -386,13 +388,17 @@ fn run_package(package: &str, arguments: &[String]) {
     let registry = mcp_cli::registry::load_registry(&registry_path)
         .unwrap_or_else(|error| fatal(format!("cannot read registry: {error}")));
     let package = registry.packages.get(name).unwrap_or_else(|| fatal(format!("{name} is not installed")));
+    let locked = if requested_version.is_none() { project_locked_version(name) } else { None };
     let version = requested_version
         .map(str::to_owned)
-        .or_else(|| project_locked_version(name))
+        .or_else(|| locked.as_ref().map(|(version, _)| version.clone()))
         .or_else(|| package.active_version.clone())
         .unwrap_or_else(|| fatal(format!("{name} has no active version")));
     if !package.versions.iter().any(|installed| installed.version == version) {
-        fatal(format!("{name}@{version} is not installed"));
+        match &locked {
+            Some((_, lock_path)) => fatal(format!("{name}@{version} is pinned by {} but is not installed", lock_path.display())),
+            None => fatal(format!("{name}@{version} is not installed")),
+        }
     }
     let install_root = state_home.join("packages").join(name).join(&version);
     let manifest = std::fs::read_to_string(install_root.join("source/mcpctl.toml"))

@@ -90,3 +90,17 @@ fn run_inside_a_project_uses_the_locked_version_and_falls_back_to_active_elsewhe
         Some("1.0.0".to_owned())
     );
 }
+
+#[test]
+fn run_fails_naming_the_project_when_the_locked_version_is_not_installed() {
+    let state_home = state_with_three_versions();
+    let project = project_pinning("example-mcp", "4.0.0");
+
+    let output = run_in(&project, &state_home, "example-mcp");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty(), "locked-version errors must not fall back to another version");
+    assert!(stderr.contains("example-mcp@4.0.0"), "{stderr}");
+    assert!(stderr.contains(&project.join(".mcpctl.lock").display().to_string()), "{stderr}");
+}
