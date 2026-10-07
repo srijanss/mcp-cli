@@ -6,6 +6,7 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct ProjectManifest {
     pub project: ProjectInfo,
+    #[serde(default)]
     pub mcp: Vec<McpDeclaration>,
 }
 

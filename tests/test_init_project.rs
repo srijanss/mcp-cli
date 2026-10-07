@@ -259,7 +259,7 @@ fn init_on_a_state_home_with_nothing_installed_names_each_project_mcp_and_sugges
     assert!(stderr.contains("mcp 'project-mcp' is not installed; run `mcpctl sync`"), "{stderr}");
     assert!(stderr.contains("mcp 'design-advisor-mcp' is not installed; run `mcpctl sync`"), "{stderr}");
 
-    fs::write(project.join(".mcpctl.toml"), "mcp = []\n\n[project]\nname = \"checkout-service\"\n").unwrap();
+    fs::write(project.join(".mcpctl.toml"), "[project]\nname = \"checkout-service\"\n").unwrap();
 
     let empty = mcpctl(&project, &state_home, &["init"]);
 
@@ -280,4 +280,20 @@ fn init_fails_naming_the_lock_file_when_the_project_lock_cannot_be_read() {
     assert!(!output.status.success());
     assert!(stderr.contains(&format!("cannot read {}", project.join(".mcpctl.lock").display())), "{stderr}");
     assert!(!project.join("docs").exists(), "an unreadable lock must not fall back to the active versions");
+}
+
+#[test]
+fn a_project_that_declares_no_mcps_syncs_and_initializes_without_error() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    let project = workspace.join("empty-service");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join(".mcpctl.toml"), "[project]\nname = \"empty-service\"\n").unwrap();
+
+    let sync = mcpctl(&project, &state_home, &["sync"]);
+    let init = mcpctl(&project, &state_home, &["init"]);
+
+    assert!(sync.status.success(), "{}", String::from_utf8_lossy(&sync.stderr));
+    assert!(init.status.success(), "{}", String::from_utf8_lossy(&init.stderr));
+    assert!(project.join(".mcpctl.lock").is_file(), "sync still records an (empty) lock");
 }

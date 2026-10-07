@@ -199,3 +199,11 @@ fn valid_local_source_resolves_relative_to_project_root() {
 
     assert_eq!(resolved, root.join("../project-mcp"));
 }
+
+#[test]
+fn project_manifest_without_any_mcp_entries_parses_as_declaring_none() {
+    let manifest = parse_project_manifest("[project]\nname = \"empty-service\"\n").unwrap();
+
+    assert_eq!(manifest.project.name, "empty-service");
+    assert!(manifest.mcp.is_empty());
+}
