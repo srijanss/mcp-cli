@@ -2,6 +2,7 @@ pub mod catalog;
 pub mod cli;
 pub mod lock;
 pub mod paths;
+pub mod picker;
 pub mod project;
 pub mod project_lock;
 pub mod manifest;
