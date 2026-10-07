@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use serde::Deserialize;
 
 /// A project's `.mcpctl.toml`: which MCPs the project uses and at what versions.
@@ -17,6 +19,24 @@ pub struct McpDeclaration {
     pub name: String,
     pub version: String,
     pub source: String,
+}
+
+impl McpDeclaration {
+    /// Resolves `source` against the project root and checks it is a local package directory.
+    pub fn resolve_local_source(&self, project_root: &Path) -> Result<PathBuf, String> {
+        let path = project_root.join(&self.source);
+        if !path.is_dir() {
+            return Err(format!(
+                "mcp '{}' source {} does not exist or is not a directory",
+                self.name,
+                path.display()
+            ));
+        }
+        if !path.join("mcpctl.toml").is_file() {
+            return Err(format!("mcp '{}' source {} has no mcpctl.toml", self.name, path.display()));
+        }
+        Ok(path)
+    }
 }
 
 pub fn parse_project_manifest(contents: &str) -> Result<ProjectManifest, String> {

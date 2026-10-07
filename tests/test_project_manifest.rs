@@ -1,4 +1,21 @@
-use mcp_cli::project::parse_project_manifest;
+use std::{fs, path::PathBuf, sync::atomic::{AtomicUsize, Ordering}};
+
+use mcp_cli::project::{parse_project_manifest, McpDeclaration};
+
+fn temporary_dir() -> PathBuf {
+    static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+    let path = std::env::temp_dir().join(format!(
+        "mcpctl-project-manifest-test-{}-{}",
+        std::process::id(),
+        NEXT_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&path).unwrap();
+    path
+}
+
+fn declaration(source: &str) -> McpDeclaration {
+    McpDeclaration { name: "project-mcp".to_owned(), version: "^0.4".to_owned(), source: source.to_owned() }
+}
 
 #[test]
 fn project_manifest_with_multiple_mcps_parses() {
@@ -136,4 +153,49 @@ source = "../project-mcp"
     .unwrap_err();
 
     assert!(error.contains("duplicate mcp 'project-mcp'"), "{error}");
+}
+
+#[test]
+fn missing_local_source_fails_naming_the_mcp_and_resolved_path() {
+    let root = temporary_dir().join("checkout-service");
+    fs::create_dir_all(&root).unwrap();
+
+    let error = declaration("../project-mcp").resolve_local_source(&root).unwrap_err();
+
+    assert!(error.contains("project-mcp"), "{error}");
+    assert!(error.contains(&root.join("../project-mcp").display().to_string()), "{error}");
+}
+
+#[test]
+fn local_source_without_package_manifest_fails_clearly() {
+    let root = temporary_dir();
+    fs::create_dir_all(root.join("project-mcp")).unwrap();
+
+    let error = declaration("project-mcp").resolve_local_source(&root).unwrap_err();
+
+    assert!(error.contains("project-mcp"), "{error}");
+    assert!(error.contains("mcpctl.toml"), "{error}");
+}
+
+#[test]
+fn local_source_that_is_a_file_fails_clearly() {
+    let root = temporary_dir();
+    fs::write(root.join("project-mcp"), "not a directory").unwrap();
+
+    let error = declaration("project-mcp").resolve_local_source(&root).unwrap_err();
+
+    assert!(error.contains("not a directory"), "{error}");
+}
+
+#[test]
+fn valid_local_source_resolves_relative_to_project_root() {
+    let workspace = temporary_dir();
+    let root = workspace.join("checkout-service");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(workspace.join("project-mcp")).unwrap();
+    fs::write(workspace.join("project-mcp/mcpctl.toml"), "").unwrap();
+
+    let resolved = declaration("../project-mcp").resolve_local_source(&root).unwrap();
+
+    assert_eq!(resolved, root.join("../project-mcp"));
 }
