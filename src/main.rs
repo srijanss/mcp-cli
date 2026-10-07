@@ -12,6 +12,24 @@ fn main() {
         Command::Update { package, source } => update_package(&package, &source),
         Command::Doctor => doctor(),
         Command::Init { package, target } => init_package(&package, target.as_deref()),
+        Command::Sync => sync_project(),
+    }
+}
+
+/// Locks the MCPs declared by the project containing the working directory and installs each locked version.
+fn sync_project() {
+    let directory = std::env::current_dir().unwrap_or_else(|error| fatal(format!("cannot read current directory: {error}")));
+    let root = mcp_cli::project::find_project_root(&directory)
+        .unwrap_or_else(|| fatal(format!("no .mcpctl.toml found in {} or any parent directory", directory.display())));
+    let manifest_path = root.join(".mcpctl.toml");
+    let manifest = std::fs::read_to_string(&manifest_path)
+        .map_err(|error| error.to_string())
+        .and_then(|contents| mcp_cli::project::parse_project_manifest(&contents))
+        .unwrap_or_else(|error| fatal(format!("{} is invalid: {error}", manifest_path.display())));
+    let lock = mcp_cli::project_lock::resolve_project_lock(&manifest, &root).unwrap_or_else(|error| fatal(error));
+    mcp_cli::project_lock::write_project_lock(&root, &lock).unwrap_or_else(|error| fatal(error));
+    for locked in &lock.mcp {
+        install_package(&root.join(&locked.source).to_string_lossy());
     }
 }
 

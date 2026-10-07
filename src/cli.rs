@@ -42,4 +42,6 @@ pub enum Command {
         #[arg(value_name = "target directory")]
         target: Option<String>,
     },
+    /// Lock and install the MCPs declared in the project's .mcpctl.toml
+    Sync,
 }
