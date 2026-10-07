@@ -175,30 +175,21 @@ fn setup_project(all: bool, mcps: &[String]) {
         println!("WARNING: {duplicate}");
     }
     let selected: Vec<_> = packages.available.iter().filter(|(package, _)| all || mcps.contains(&package.name)).collect();
-    let root = std::env::current_dir().unwrap_or_else(|error| fatal(format!("cannot read current directory: {error}")));
+    let directory = std::env::current_dir().unwrap_or_else(|error| fatal(format!("cannot read current directory: {error}")));
+    let root = mcp_cli::project::find_project_root(&directory).unwrap_or(directory);
     println!("Selected MCPs");
     for (manifest, _) in &selected {
         println!("  {}", manifest.name);
     }
-    println!("Creating .mcpctl.toml");
-    let project_name = root.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-    let manifest = mcp_cli::project::ProjectManifest {
-        project: mcp_cli::project::ProjectInfo { name: project_name },
-        mcp: selected.iter().map(|(package, source)| mcp_cli::project::McpDeclaration {
-            name: package.name.clone(),
-            version: format!("^{}", package.version),
-            source: (*source).to_owned(),
-        }).collect(),
-    };
-    let manifest_path = root.join(".mcpctl.toml");
-    std::fs::write(&manifest_path, mcp_cli::project::render_project_manifest(&manifest))
-        .unwrap_or_else(|error| fatal(format!("cannot write {}: {error}", manifest_path.display())));
+    let manifest = write_setup_manifest(&root, &selected);
     println!("Resolving versions");
     let lock = mcp_cli::project_lock::resolve_project_lock(&manifest, &root).unwrap_or_else(|error| fatal(error));
     println!("Installing required MCPs");
     install_locked_mcps(&root, &lock);
-    println!("Creating .mcpctl.lock");
-    mcp_cli::project_lock::write_project_lock(&root, &lock).unwrap_or_else(|error| fatal(error));
+    let lock_existed = root.join(".mcpctl.lock").exists();
+    if mcp_cli::project_lock::write_project_lock(&root, &lock).unwrap_or_else(|error| fatal(error)) {
+        println!("{} .mcpctl.lock", if lock_existed { "Updating" } else { "Creating" });
+    }
     println!("Applying scaffolds");
     let (applied, failed) = scaffold_project(&root, &manifest);
     println!("Checking requirements");
@@ -209,6 +200,57 @@ fn setup_project(all: bool, mcps: &[String]) {
         fatal(format!("setup failed for {}", failed.join(", ")));
     }
     println!("Project MCP environment ready.");
+}
+
+/// Writes the `.mcpctl.toml` setup leaves at `root` for the `selected` catalog MCPs and returns what it declares:
+/// a new manifest for a new project, or the existing one, kept as written, with newly selected MCPs appended.
+fn write_setup_manifest(root: &std::path::Path, selected: &[&(mcp_cli::manifest::PackageManifest, &str)]) -> mcp_cli::project::ProjectManifest {
+    let manifest_path = root.join(".mcpctl.toml");
+    let existing = match std::fs::read_to_string(&manifest_path) {
+        Ok(contents) => Some(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => fatal(format!("cannot read {}: {error}", manifest_path.display())),
+    };
+    let declare = |(package, source): &&(mcp_cli::manifest::PackageManifest, &str)| mcp_cli::project::McpDeclaration {
+        name: package.name.clone(),
+        version: format!("^{}", package.version),
+        source: (*source).to_owned(),
+    };
+    let write_manifest = |contents: String| std::fs::write(&manifest_path, contents)
+        .unwrap_or_else(|error| fatal(format!("cannot write {}: {error}", manifest_path.display())));
+    match existing {
+        None => {
+            println!("Creating .mcpctl.toml");
+            let project_name = root.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+            let manifest = mcp_cli::project::ProjectManifest {
+                project: mcp_cli::project::ProjectInfo { name: project_name },
+                mcp: selected.iter().map(declare).collect(),
+            };
+            write_manifest(mcp_cli::project::render_project_manifest(&manifest));
+            manifest
+        }
+        // The existing manifest is kept as written; newly selected MCPs are appended after it.
+        Some(contents) => {
+            let mut manifest = mcp_cli::project::parse_project_manifest(&contents)
+                .unwrap_or_else(|error| fatal(format!("{} is invalid: {error}", manifest_path.display())));
+            let added: Vec<_> = selected.iter()
+                .filter(|(package, _)| !manifest.mcp.iter().any(|declared| declared.name == package.name))
+                .map(declare)
+                .collect();
+            if !added.is_empty() {
+                println!("Updating .mcpctl.toml");
+                let appended: String = added.iter().map(|declared| format!(
+                    "\n[[mcp]]\nname = {}\nversion = {}\nsource = {}\n",
+                    toml::Value::from(declared.name.as_str()),
+                    toml::Value::from(declared.version.as_str()),
+                    toml::Value::from(declared.source.as_str()),
+                )).collect();
+                write_manifest(contents + &appended);
+            }
+            manifest.mcp.extend(added);
+            manifest
+        }
+    }
 }
 
 /// The root and parsed `.mcpctl.toml` of the project containing the working directory; fatal outside a project.

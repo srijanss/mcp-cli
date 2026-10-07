@@ -235,3 +235,40 @@ fn setup_keeps_the_first_source_when_a_hand_edited_catalog_repeats_a_name() {
     assert!(manifest.contains(&format!("source = {:?}", project_mcp.display().to_string())), "{manifest}");
     assert!(!manifest.contains("9.9.9"), "{manifest}");
 }
+
+#[test]
+fn setup_rerun_keeps_the_existing_manifest_as_written_and_appends_only_new_mcps() {
+    let (workspace, project, _, design_advisor) = workspace_with_catalog();
+    let written = "# hand-written\n[project]\nname = \"custom-name\"\n\n[[mcp]]\nname = \"project-mcp\"\nversion = \"^0.4\"\nsource = \"../project-mcp\"\n";
+    fs::write(project.join(".mcpctl.toml"), written).unwrap();
+
+    let output = mcpctl(&workspace, &project, &["setup", "--mcp", "project-mcp", "--mcp", "design-advisor-mcp"]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(
+        fs::read_to_string(project.join(".mcpctl.toml")).unwrap(),
+        format!(
+            "{written}\n[[mcp]]\nname = \"design-advisor-mcp\"\nversion = \"^0.2.0\"\nsource = {:?}\n",
+            design_advisor.display().to_string()
+        )
+    );
+    assert!(stdout(&output).contains("Updating .mcpctl.toml\n"), "stdout: {}", stdout(&output));
+}
+
+#[test]
+fn setup_all_rerun_with_nothing_new_leaves_the_manifest_and_lock_untouched_and_reuses_installs() {
+    let (workspace, project, _, _) = workspace_with_catalog();
+    assert!(mcpctl(&workspace, &project, &["setup", "--all"]).status.success());
+    let manifest = fs::read(project.join(".mcpctl.toml")).unwrap();
+    let lock = fs::read(project.join(".mcpctl.lock")).unwrap();
+    let installed_at = fs::metadata(workspace.join("state/packages/project-mcp/0.4.3")).unwrap().modified().unwrap();
+
+    let output = mcpctl(&workspace, &project, &["setup", "--all"]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(fs::read(project.join(".mcpctl.toml")).unwrap(), manifest);
+    assert_eq!(fs::read(project.join(".mcpctl.lock")).unwrap(), lock);
+    assert_eq!(fs::metadata(workspace.join("state/packages/project-mcp/0.4.3")).unwrap().modified().unwrap(), installed_at);
+    assert!(!stdout(&output).contains(".mcpctl.toml\n"), "stdout: {}", stdout(&output));
+    assert!(!stdout(&output).contains(".mcpctl.lock\n"), "stdout: {}", stdout(&output));
+}
