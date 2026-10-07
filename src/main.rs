@@ -359,6 +359,14 @@ fn list_packages() {
     }
 }
 
+/// The version of `name` pinned by the `.mcpctl.lock` of the project containing the working directory.
+fn project_locked_version(name: &str) -> Option<String> {
+    let root = mcp_cli::project::find_project_root(&std::env::current_dir().ok()?)?;
+    let contents = std::fs::read_to_string(root.join(".mcpctl.lock")).ok()?;
+    let lock = mcp_cli::project_lock::parse_project_lock(&contents).ok()?;
+    lock.mcp.into_iter().find(|locked| locked.name == name).map(|locked| locked.version)
+}
+
 fn run_package(package: &str, arguments: &[String]) {
     let (name, requested_version) = package.split_once('@').map_or((package, None), |(name, version)| (name, Some(version)));
     if requested_version == Some("") {
@@ -380,6 +388,7 @@ fn run_package(package: &str, arguments: &[String]) {
     let package = registry.packages.get(name).unwrap_or_else(|| fatal(format!("{name} is not installed")));
     let version = requested_version
         .map(str::to_owned)
+        .or_else(|| project_locked_version(name))
         .or_else(|| package.active_version.clone())
         .unwrap_or_else(|| fatal(format!("{name} has no active version")));
     if !package.versions.iter().any(|installed| installed.version == version) {
