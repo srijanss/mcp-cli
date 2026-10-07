@@ -360,12 +360,13 @@ fn list_packages() {
 }
 
 /// The version of `name` pinned by the `.mcpctl.lock` of the project containing the working directory.
-/// Returns the pinned version together with the lock file that pins it.
+/// Returns the pinned version together with the lock file that pins it; a malformed lock is fatal.
 fn project_locked_version(name: &str) -> Option<(String, std::path::PathBuf)> {
     let root = mcp_cli::project::find_project_root(&std::env::current_dir().ok()?)?;
     let lock_path = root.join(".mcpctl.lock");
     let contents = std::fs::read_to_string(&lock_path).ok()?;
-    let lock = mcp_cli::project_lock::parse_project_lock(&contents).ok()?;
+    let lock = mcp_cli::project_lock::parse_project_lock(&contents)
+        .unwrap_or_else(|error| fatal(format!("{} is malformed: {error}", lock_path.display())));
     lock.mcp.into_iter().find(|locked| locked.name == name).map(|locked| (locked.version, lock_path))
 }
 

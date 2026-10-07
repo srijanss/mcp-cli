@@ -104,3 +104,17 @@ fn run_fails_naming_the_project_when_the_locked_version_is_not_installed() {
     assert!(stderr.contains("example-mcp@4.0.0"), "{stderr}");
     assert!(stderr.contains(&project.join(".mcpctl.lock").display().to_string()), "{stderr}");
 }
+
+#[test]
+fn run_fails_naming_the_lock_file_when_the_project_lock_is_malformed() {
+    let state_home = state_with_three_versions();
+    let project = project_pinning("example-mcp", "2.0.0");
+    fs::write(project.join(".mcpctl.lock"), "version = 1\n[[mcp]\nbroken").unwrap();
+
+    let output = run_in(&project, &state_home, "example-mcp");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty(), "a malformed lock must not fall back to the active version");
+    assert!(stderr.contains(&project.join(".mcpctl.lock").display().to_string()), "{stderr}");
+}
