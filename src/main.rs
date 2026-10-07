@@ -114,28 +114,85 @@ fn init_project() {
     } else {
         mcp_cli::registry::Registry { schema_version: 1, packages: Default::default() }
     };
+    // Every MCP is resolved before anything is copied, so clashes between their scaffolds are reported up front.
+    let resolved: Vec<_> = manifest.mcp.iter().map(|declared| {
+        let name = declared.name.as_str();
+        let resolved = project_mcp_version(declared, lock.as_ref(), &lock_path, &registry).and_then(|version| {
+            installed_scaffold(&state_home, name, &version)
+                .map(|(source, scaffold)| (version.clone(), source, scaffold))
+                .map_err(|error| format!("{name}@{version}: {error}"))
+        });
+        (name, resolved)
+    }).collect();
+    warn_scaffold_clashes(resolved.iter().filter_map(|(name, resolved)| match resolved {
+        Ok((_, source, Some(scaffold))) => Some((*name, source.as_path(), scaffold)),
+        _ => None,
+    }));
     // One MCP failing doesn't stop the rest; each failure is reported against the MCP that caused it.
     let mut failed = Vec::new();
-    for declared in &manifest.mcp {
-        let initialized = project_mcp_version(declared, lock.as_ref(), &lock_path, &registry).and_then(|version| {
-            println!("Initializing {}@{version}", declared.name);
-            match installed_scaffold(&state_home, &declared.name, &version) {
-                Ok((source, Some(scaffold))) => apply_scaffold(&declared.name, &source, &scaffold, &root),
-                Ok((_, None)) => {
-                    println!("Skipping {}@{version} (no [scaffold])", declared.name);
+    for (name, resolved) in &resolved {
+        let initialized = resolved.as_ref().map_err(String::clone).and_then(|(version, source, scaffold)| {
+            println!("Initializing {name}@{version}");
+            match scaffold {
+                Some(scaffold) => apply_scaffold(name, source, scaffold, &root).map_err(|error| format!("{name}@{version}: {error}")),
+                None => {
+                    println!("Skipping {name}@{version} (no [scaffold])");
                     Ok(())
                 }
-                Err(error) => Err(error),
             }
-            .map_err(|error| format!("{}@{version}: {error}", declared.name))
         });
         if let Err(error) = initialized {
             eprintln!("{error}");
-            failed.push(declared.name.as_str());
+            failed.push(*name);
         }
     }
     if !failed.is_empty() {
         fatal(format!("init failed for {}", failed.join(", ")));
+    }
+}
+
+/// Warns about each file a later MCP's scaffold would copy (not merge) to a path an earlier MCP's scaffold
+/// already fills: `init` never overwrites, so the later MCP's file would be silently skipped.
+fn warn_scaffold_clashes<'a>(scaffolds: impl Iterator<Item = (&'a str, &'a std::path::Path, &'a mcp_cli::manifest::Scaffold)>) {
+    let mut first_shipped_by = std::collections::BTreeMap::new();
+    for (name, source, scaffold) in scaffolds {
+        let mut destinations = Vec::new();
+        for file in &scaffold.files {
+            let mut files = Vec::new();
+            scaffold_tree_files(source, std::path::Path::new(&file.from), std::path::Path::new(&file.to), &[], &mut files);
+            destinations.extend(files.into_iter().map(|path| (path, file.merge.is_some())));
+        }
+        for dir in &scaffold.dirs {
+            let mut files = Vec::new();
+            scaffold_tree_files(source, std::path::Path::new(dir), std::path::Path::new(dir), &scaffold.exclude, &mut files);
+            destinations.extend(files.into_iter().map(|path| (path, false)));
+        }
+        for (path, merges) in destinations {
+            match first_shipped_by.get(&path) {
+                Some(&first) if first != name && !merges => println!(
+                    "WARNING: {} is shipped by both {first} and {name}; keeping {first}'s (listed first in .mcpctl.toml)",
+                    path.display()
+                ),
+                Some(_) => {}
+                None => {
+                    first_shipped_by.insert(path, name);
+                }
+            }
+        }
+    }
+}
+
+/// The target-relative path of every file `copy_scaffold_tree` would copy from `from` to `to`.
+fn scaffold_tree_files(source_root: &std::path::Path, from: &std::path::Path, to: &std::path::Path, exclude: &[String], files: &mut Vec<std::path::PathBuf>) {
+    if exclude.iter().any(|excluded| std::path::Path::new(excluded) == from) { return; }
+    let source = source_root.join(from);
+    if source.is_dir() {
+        for entry in std::fs::read_dir(&source).into_iter().flatten().flatten() {
+            let name = entry.file_name();
+            scaffold_tree_files(source_root, &from.join(&name), &to.join(&name), exclude, files);
+        }
+    } else if source.is_file() {
+        files.push(to.to_path_buf());
     }
 }
 

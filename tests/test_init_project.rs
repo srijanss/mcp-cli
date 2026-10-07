@@ -333,3 +333,42 @@ fn init_without_an_mcp_heads_each_project_mcps_output_with_its_name_and_version(
     assert!(single.status.success(), "{}", String::from_utf8_lossy(&single.stderr));
     assert!(!String::from_utf8_lossy(&single.stdout).contains("Initializing"), "a single-MCP init prints no header");
 }
+
+/// Makes an MCP source also ship a plain (non-merge) `AGENTS.md` and a shared `.agents/shared/rules.md` directory entry.
+fn add_clashing_files(workspace: &Path, dir: &str, name: &str) {
+    let source = workspace.join(dir);
+    fs::write(source.join("templates/AGENTS.md"), format!("{name} agents")).unwrap();
+    fs::create_dir_all(source.join(".agents/shared")).unwrap();
+    fs::write(source.join(".agents/shared/rules.md"), format!("{name} rules")).unwrap();
+    let manifest = fs::read_to_string(source.join("mcpctl.toml"))
+        .unwrap()
+        .replace(&format!("dirs = [\".agents/{name}\"]"), &format!("dirs = [\".agents/{name}\", \".agents/shared\"]"));
+    fs::write(source.join("mcpctl.toml"), manifest + "\n[[scaffold.files]]\nfrom = \"templates/AGENTS.md\"\nto = \"AGENTS.md\"\n").unwrap();
+}
+
+#[test]
+fn init_warns_on_every_run_when_two_project_mcps_ship_the_same_non_merge_file_and_keeps_the_first() {
+    let (workspace, project) = workspace_with_project();
+    let state_home = workspace.join("state");
+    for (dir, name) in [("project-mcp", "project-mcp"), ("design-advisor-mcp", "design-advisor-mcp")] {
+        add_shared_config(&workspace, dir, name);
+        add_clashing_files(&workspace, dir, name);
+    }
+    assert!(mcpctl(&project, &state_home, &["sync"]).status.success());
+
+    let first = mcpctl(&project, &state_home, &["init"]);
+    let second = mcpctl(&project, &state_home, &["init"]);
+
+    for output in [&first, &second] {
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for path in ["AGENTS.md", ".agents/shared/rules.md"] {
+            let warning = format!("WARNING: {path} is shipped by both project-mcp and design-advisor-mcp; keeping project-mcp's (listed first in .mcpctl.toml)");
+            let position = stdout.find(&warning).unwrap_or_else(|| panic!("missing {warning:?} in:\n{stdout}"));
+            assert!(position < stdout.find("Initializing").unwrap(), "clashes are reported before anything is copied: {stdout}");
+        }
+        assert!(!stdout.contains("WARNING: .mcp.json") && !stdout.contains("WARNING: .codex/config.toml"), "shared merge files are not clashes: {stdout}");
+    }
+    assert_eq!(fs::read_to_string(project.join("AGENTS.md")).unwrap(), "project-mcp agents");
+    assert_eq!(fs::read_to_string(project.join(".agents/shared/rules.md")).unwrap(), "project-mcp rules");
+}
