@@ -16,6 +16,7 @@ fn main() {
         Command::Sync { locked } => sync_project(locked),
         Command::Catalog { command: CatalogCommand::Add { path } } => catalog_add(&path),
         Command::Catalog { command: CatalogCommand::List } => catalog_list(),
+        Command::Catalog { command: CatalogCommand::Remove { target } } => catalog_remove(&target),
     }
 }
 
@@ -67,10 +68,38 @@ fn catalog_add(path: &str) {
         fatal(format!("{} is already in the catalog from {}; cannot also add {}", manifest.name, existing.source, source.display()));
     }
     catalog.mcp.push(mcp_cli::catalog::CatalogEntry { source: source.display().to_string() });
-    std::fs::create_dir_all(catalog_path.parent().expect("catalog.toml has a parent"))
-        .and_then(|()| std::fs::write(&catalog_path, mcp_cli::catalog::render_catalog(&catalog)))
-        .unwrap_or_else(|error| fatal(format!("cannot write {}: {error}", catalog_path.display())));
+    write_catalog(&catalog_path, &catalog);
     println!("Added {}@{} ({})", manifest.name, manifest.version, source.display());
+}
+
+fn write_catalog(catalog_path: &std::path::Path, catalog: &mcp_cli::catalog::Catalog) {
+    std::fs::create_dir_all(catalog_path.parent().expect("catalog.toml has a parent"))
+        .and_then(|()| {
+            // An empty catalog renders as `mcp = []`; write an empty file instead so it reads like a fresh catalog.
+            let contents = if catalog.mcp.is_empty() { String::new() } else { mcp_cli::catalog::render_catalog(catalog) };
+            std::fs::write(catalog_path, contents)
+        })
+        .unwrap_or_else(|error| fatal(format!("cannot write {}: {error}", catalog_path.display())));
+}
+
+fn catalog_remove(target: &str) {
+    let catalog_path = config_home().join("catalog.toml");
+    let mut catalog = read_catalog(&catalog_path);
+    // A path target may name a source that no longer exists, so it is resolved without touching the filesystem as a fallback.
+    let target_path = std::fs::canonicalize(target).unwrap_or_else(|_| {
+        std::env::current_dir().unwrap_or_else(|error| fatal(format!("cannot read current directory: {error}"))).join(target)
+    });
+    let entries_before = catalog.mcp.len();
+    catalog.mcp.retain(|entry| {
+        let source = std::path::Path::new(&entry.source);
+        source != target_path && !catalog_source_manifest(source).is_ok_and(|manifest| manifest.name == target)
+    });
+    if catalog.mcp.len() == entries_before {
+        let names: Vec<String> = catalog_packages(&catalog).available.into_iter().map(|(manifest, _)| manifest.name).collect();
+        fatal(format!("{target} is not in the catalog; catalog MCPs: {}", names.join(", ")));
+    }
+    write_catalog(&catalog_path, &catalog);
+    println!("Removed {target} from the catalog");
 }
 
 fn catalog_list() {

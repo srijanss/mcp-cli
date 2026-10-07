@@ -64,4 +64,9 @@ pub enum CatalogCommand {
     },
     /// List the MCPs in the catalog
     List,
+    /// Remove an MCP from the catalog by name or source path
+    Remove {
+        #[arg(value_name = "name or path")]
+        target: String,
+    },
 }

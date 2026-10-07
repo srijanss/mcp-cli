@@ -248,3 +248,57 @@ fn catalog_list_keeps_the_first_source_when_a_hand_edited_catalog_repeats_a_name
         )
     );
 }
+
+#[test]
+fn catalog_remove_by_name_drops_only_that_source_from_the_catalog() {
+    let workspace = temporary_dir();
+    write_package(&workspace, "project-mcp", "project-mcp", "0.4.3");
+    let design_advisor = write_package(&workspace, "design-advisor-mcp", "design-advisor-mcp", "0.2.0");
+    assert!(mcpctl(&workspace, &workspace, &["catalog", "add", "project-mcp"]).status.success());
+    assert!(mcpctl(&workspace, &workspace, &["catalog", "add", "design-advisor-mcp"]).status.success());
+
+    let output = mcpctl(&workspace, &workspace, &["catalog", "remove", "project-mcp"]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output), "Removed project-mcp from the catalog\n");
+    assert_eq!(
+        fs::read_to_string(workspace.join("config/catalog.toml")).unwrap(),
+        format!("[[mcp]]\nsource = {:?}\n", design_advisor.display().to_string())
+    );
+    assert!(workspace.join("project-mcp/mcpctl.toml").exists(), "remove must not touch the source");
+}
+
+#[test]
+fn catalog_remove_by_source_path_drops_an_entry_whose_source_is_gone() {
+    let workspace = temporary_dir();
+    let removed = write_package(&workspace, "removed-mcp", "removed-mcp", "1.0.0");
+    assert!(mcpctl(&workspace, &workspace, &["catalog", "add", "removed-mcp"]).status.success());
+    fs::remove_dir_all(&removed).unwrap();
+
+    let output = mcpctl(&workspace, &workspace, &["catalog", "remove", "removed-mcp"]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output), "Removed removed-mcp from the catalog\n");
+    assert_eq!(fs::read_to_string(workspace.join("config/catalog.toml")).unwrap(), "");
+}
+
+#[test]
+fn catalog_remove_of_an_unknown_target_fails_listing_the_catalogs_names_and_leaves_it_unchanged() {
+    let workspace = temporary_dir();
+    write_package(&workspace, "project-mcp", "project-mcp", "0.4.3");
+    write_package(&workspace, "design-advisor-mcp", "design-advisor-mcp", "0.2.0");
+    assert!(mcpctl(&workspace, &workspace, &["catalog", "add", "project-mcp"]).status.success());
+    assert!(mcpctl(&workspace, &workspace, &["catalog", "add", "design-advisor-mcp"]).status.success());
+    let before = fs::read_to_string(workspace.join("config/catalog.toml")).unwrap();
+
+    let output = mcpctl(&workspace, &workspace, &["catalog", "remove", "missing-mcp"]);
+
+    assert!(!output.status.success());
+    assert_eq!(stdout(&output), "");
+    assert!(
+        stderr(&output).contains("missing-mcp is not in the catalog; catalog MCPs: design-advisor-mcp, project-mcp"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert_eq!(fs::read_to_string(workspace.join("config/catalog.toml")).unwrap(), before);
+}
