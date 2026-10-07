@@ -1,4 +1,4 @@
-use mcp_cli::project_lock::{parse_project_lock, render_project_lock, LockedMcp, ProjectLock};
+use mcp_cli::project_lock::{first_lock_mismatch, parse_project_lock, render_project_lock, LockedMcp, ProjectLock};
 
 fn locked(name: &str, version: &str) -> LockedMcp {
     LockedMcp {
@@ -90,5 +90,22 @@ version = "0.4.3"
 source = "../project-mcp"
 manifest_digest = "sha256:project-mcp-digest"
 "#
+    );
+}
+
+#[test]
+fn first_lock_mismatch_names_the_mcp_that_changed_was_added_or_was_removed() {
+    let lock = |entries: Vec<LockedMcp>| ProjectLock { version: 1, mcp: entries };
+    let committed = lock(vec![locked("design-advisor-mcp", "0.2.1"), locked("project-mcp", "0.4.3")]);
+    let mut redigested = locked("project-mcp", "0.4.3");
+    redigested.manifest_digest = "sha256:changed".to_owned();
+
+    assert_eq!(first_lock_mismatch(&committed, &lock(vec![locked("project-mcp", "0.4.3"), locked("design-advisor-mcp", "0.2.1")])), None);
+    assert_eq!(first_lock_mismatch(&committed, &lock(vec![locked("design-advisor-mcp", "0.2.1"), locked("project-mcp", "0.4.4")])), Some("project-mcp".to_owned()));
+    assert_eq!(first_lock_mismatch(&committed, &lock(vec![locked("design-advisor-mcp", "0.2.1"), redigested])), Some("project-mcp".to_owned()));
+    assert_eq!(first_lock_mismatch(&committed, &lock(vec![locked("project-mcp", "0.4.3")])), Some("design-advisor-mcp".to_owned()));
+    assert_eq!(
+        first_lock_mismatch(&committed, &lock(vec![locked("design-advisor-mcp", "0.2.1"), locked("project-mcp", "0.4.3"), locked("tdd-mcp", "1.0.0")])),
+        Some("tdd-mcp".to_owned())
     );
 }

@@ -152,3 +152,29 @@ fn locked_sync_on_a_fresh_store_installs_the_committed_lock_without_rewriting_it
     assert_eq!(mcpctl(&project, &fresh_state, &["run", "project-mcp"]).stdout, b"project-mcp@0.4.3");
     assert_eq!(mcpctl(&project, &fresh_state, &["run", "design-advisor-mcp"]).stdout, b"design-advisor-mcp@0.2.0");
 }
+
+#[test]
+fn locked_sync_fails_without_installing_when_the_lock_is_missing_or_stale() {
+    let (workspace, project) = workspace_with_project();
+    let fresh_state = workspace.join("ci-machine");
+
+    let missing = mcpctl(&project, &fresh_state, &["sync", "--locked"]);
+
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains(".mcpctl.lock"), "{}", String::from_utf8_lossy(&missing.stderr));
+    assert!(!project.join(".mcpctl.lock").exists());
+    assert!(!fresh_state.join("packages").exists());
+
+    assert!(mcpctl(&project, &workspace.join("first-machine"), &["sync"]).status.success());
+    let committed_lock = fs::read(project.join(".mcpctl.lock")).unwrap();
+    write_package(&workspace, "project-mcp", "project-mcp", "0.4.4");
+
+    let stale = mcpctl(&project, &fresh_state, &["sync", "--locked"]);
+
+    let stderr = String::from_utf8_lossy(&stale.stderr);
+    assert!(!stale.status.success());
+    assert!(stderr.contains("project-mcp"), "{stderr}");
+    assert!(stderr.contains("mcpctl sync"), "{stderr}");
+    assert_eq!(fs::read(project.join(".mcpctl.lock")).unwrap(), committed_lock);
+    assert!(!fresh_state.join("packages").exists());
+}

@@ -27,7 +27,16 @@ fn sync_project(locked: bool) {
         .and_then(|contents| mcp_cli::project::parse_project_manifest(&contents))
         .unwrap_or_else(|error| fatal(format!("{} is invalid: {error}", manifest_path.display())));
     let lock = mcp_cli::project_lock::resolve_project_lock(&manifest, &root).unwrap_or_else(|error| fatal(error));
-    if !locked {
+    if locked {
+        let lock_path = root.join(".mcpctl.lock");
+        let committed = std::fs::read_to_string(&lock_path)
+            .unwrap_or_else(|error| fatal(format!("--locked requires {}: {error}", lock_path.display())));
+        let committed = mcp_cli::project_lock::parse_project_lock(&committed)
+            .unwrap_or_else(|error| fatal(format!("{} is malformed: {error}", lock_path.display())));
+        if let Some(name) = mcp_cli::project_lock::first_lock_mismatch(&committed, &lock) {
+            fatal(format!("{} is out of date for mcp '{name}'; run `mcpctl sync` to update it", lock_path.display()));
+        }
+    } else {
         mcp_cli::project_lock::write_project_lock(&root, &lock).unwrap_or_else(|error| fatal(error));
     }
     let state_home = mcp_cli::paths::data_home_from(std::env::var_os("MCPCTL_HOME").map(std::path::PathBuf::from))

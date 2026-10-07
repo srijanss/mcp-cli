@@ -47,6 +47,16 @@ pub fn render_project_lock(lock: &ProjectLock) -> String {
     toml::to_string(&SortedLock { version: lock.version, mcp }).expect("lock entries are plain strings")
 }
 
+/// The name of the first MCP whose entry differs between two locks, or that only one of them has.
+pub fn first_lock_mismatch(locked: &ProjectLock, resolved: &ProjectLock) -> Option<String> {
+    fn entry<'a>(lock: &'a ProjectLock, name: &str) -> Option<&'a LockedMcp> {
+        lock.mcp.iter().find(|mcp| mcp.name == name)
+    }
+    let mut names: Vec<&str> = locked.mcp.iter().chain(&resolved.mcp).map(|mcp| mcp.name.as_str()).collect();
+    names.sort_unstable();
+    names.into_iter().find(|name| entry(locked, name) != entry(resolved, name)).map(str::to_owned)
+}
+
 /// Pins a local-source declaration to the exact package version found at its source.
 pub fn resolve_locked_mcp(declaration: &McpDeclaration, project_root: &Path) -> Result<LockedMcp, String> {
     let source = declaration.resolve_local_source(project_root)?;
