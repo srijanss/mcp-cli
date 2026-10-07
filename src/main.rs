@@ -118,6 +118,7 @@ fn init_project() {
     let mut failed = Vec::new();
     for declared in &manifest.mcp {
         let initialized = project_mcp_version(declared, lock.as_ref(), &lock_path, &registry).and_then(|version| {
+            println!("Initializing {}@{version}", declared.name);
             match installed_scaffold(&state_home, &declared.name, &version) {
                 Ok((source, Some(scaffold))) => apply_scaffold(&declared.name, &source, &scaffold, &root),
                 Ok((_, None)) => {

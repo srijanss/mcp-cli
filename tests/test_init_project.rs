@@ -313,3 +313,23 @@ fn init_fails_naming_a_malformed_lock_without_falling_back_to_the_active_version
     assert!(stderr.contains(&format!("{} is malformed", project.join(".mcpctl.lock").display())), "{stderr}");
     assert!(!project.join("docs").exists(), "a malformed lock must not fall back to the active versions");
 }
+
+#[test]
+fn init_without_an_mcp_heads_each_project_mcps_output_with_its_name_and_version() {
+    let (workspace, project) = workspace_with_project();
+    let state_home = workspace.join("state");
+    assert!(mcpctl(&project, &state_home, &["sync"]).status.success());
+    let single_target = workspace.join("single");
+
+    let output = mcpctl(&project, &state_home, &["init"]);
+    let single = mcpctl(&workspace, &state_home, &["init", "project-mcp", single_target.to_str().unwrap()]);
+
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let position = |line: &str| stdout.find(line).unwrap_or_else(|| panic!("missing {line:?} in:\n{stdout}"));
+    assert!(position("Initializing project-mcp@0.4.3\n") < position("Copied docs/project-mcp.md"), "{stdout}");
+    assert!(position("Copied docs/project-mcp.md") < position("Initializing design-advisor-mcp@0.2.0\n"), "{stdout}");
+    assert!(position("Initializing design-advisor-mcp@0.2.0\n") < position("Copied docs/design-advisor-mcp.md"), "{stdout}");
+    assert!(single.status.success(), "{}", String::from_utf8_lossy(&single.stderr));
+    assert!(!String::from_utf8_lossy(&single.stdout).contains("Initializing"), "a single-MCP init prints no header");
+}
