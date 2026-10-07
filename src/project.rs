@@ -20,5 +20,11 @@ pub struct McpDeclaration {
 }
 
 pub fn parse_project_manifest(contents: &str) -> Result<ProjectManifest, String> {
-    toml::from_str(contents).map_err(|error| error.to_string())
+    let manifest: ProjectManifest = toml::from_str(contents).map_err(|error| error.to_string())?;
+    for mcp in &manifest.mcp {
+        semver::VersionReq::parse(&mcp.version).map_err(|error| {
+            format!("mcp '{}' has invalid version constraint '{}': {error}", mcp.name, mcp.version)
+        })?;
+    }
+    Ok(manifest)
 }

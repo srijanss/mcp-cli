@@ -43,3 +43,45 @@ version = "^0.4"
 
     assert!(error.contains("missing field `source`"), "{error}");
 }
+
+#[test]
+fn project_manifest_rejects_invalid_version_constraint_naming_the_mcp() {
+    let error = parse_project_manifest(
+        r#"
+[project]
+name = "checkout-service"
+
+[[mcp]]
+name = "project-mcp"
+version = "^0.4"
+source = "../project-mcp"
+
+[[mcp]]
+name = "design-advisor-mcp"
+version = "latest-please"
+source = "../design-advisor-mcp"
+"#,
+    )
+    .unwrap_err();
+
+    assert!(error.contains("design-advisor-mcp"), "{error}");
+    assert!(error.contains("latest-please"), "{error}");
+}
+
+#[test]
+fn project_manifest_rejects_empty_version_constraint() {
+    let error = parse_project_manifest(
+        r#"
+[project]
+name = "checkout-service"
+
+[[mcp]]
+name = "project-mcp"
+version = ""
+source = "../project-mcp"
+"#,
+    )
+    .unwrap_err();
+
+    assert!(error.contains("project-mcp"), "{error}");
+}
