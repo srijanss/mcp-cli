@@ -88,3 +88,29 @@ pub fn resolve_project_lock(manifest: &ProjectManifest, project_root: &Path) -> 
         .collect::<Result<_, _>>()?;
     Ok(ProjectLock { version: LOCK_VERSION, mcp })
 }
+
+/// Writes `.mcpctl.lock` under `project_root` unless it already holds an equivalent lock.
+/// Returns whether the file was written; a malformed existing lock is an error, never overwritten.
+pub fn write_project_lock(project_root: &Path, lock: &ProjectLock) -> Result<bool, String> {
+    let path = project_root.join(".mcpctl.lock");
+    let rendered = render_project_lock(lock);
+    match std::fs::read_to_string(&path) {
+        Ok(existing) => {
+            let existing = parse_project_lock(&existing).map_err(|error| format!("{} is malformed: {error}", path.display()))?;
+            if render_project_lock(&existing) == rendered {
+                return Ok(false);
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
+    }
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(format!(".tmp-{}", std::process::id()));
+    let temporary = std::path::PathBuf::from(temporary);
+    let written = std::fs::write(&temporary, &rendered).and_then(|()| std::fs::rename(&temporary, &path));
+    written.map_err(|error| {
+        let _ = std::fs::remove_file(&temporary);
+        format!("cannot write {}: {error}", path.display())
+    })?;
+    Ok(true)
+}
