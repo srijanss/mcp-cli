@@ -190,3 +190,33 @@ fn catalog_list_of_an_empty_catalog_suggests_catalog_add() {
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     assert_eq!(stdout(&output), "Catalog is empty\nAdd an MCP with: mcpctl catalog add <path>\n");
 }
+
+#[test]
+fn catalog_list_reports_sources_that_became_unusable_and_still_lists_the_rest() {
+    let workspace = temporary_dir();
+    let project_mcp = write_package(&workspace, "project-mcp", "project-mcp", "0.4.3");
+    let removed = write_package(&workspace, "removed-mcp", "removed-mcp", "1.0.0");
+    let broken = write_package(&workspace, "broken-mcp", "broken-mcp", "0.1.0");
+    for path in ["removed-mcp", "project-mcp", "broken-mcp"] {
+        assert!(mcpctl(&workspace, &workspace, &["catalog", "add", path]).status.success());
+    }
+    fs::remove_dir_all(&removed).unwrap();
+    fs::write(broken.join("mcpctl.toml"), "name = \"broken-mcp\"\nversion = \"not-semver\"\n").unwrap();
+
+    let output = mcpctl(&workspace, &workspace, &["catalog", "list"]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let listing = stdout(&output);
+    assert!(
+        listing.starts_with(&format!(
+            "project-mcp@0.4.3 (binary, scaffold)\n  The project-mcp server\n  source: {}\n",
+            project_mcp.display()
+        )),
+        "{listing}"
+    );
+    assert!(
+        listing.contains(&format!("unavailable: {} does not exist or is not a directory\n", removed.display())),
+        "{listing}"
+    );
+    assert!(listing.contains(&format!("unavailable: invalid mcpctl.toml in {}", broken.display())), "{listing}");
+}

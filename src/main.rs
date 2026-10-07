@@ -79,11 +79,8 @@ fn catalog_list() {
         println!("Catalog is empty\nAdd an MCP with: mcpctl catalog add <path>");
         return;
     }
-    let mut manifests: Vec<_> = catalog.mcp.iter()
-        .filter_map(|entry| catalog_source_manifest(std::path::Path::new(&entry.source)).ok().map(|manifest| (manifest, &entry.source)))
-        .collect();
-    manifests.sort_by(|(left, _), (right, _)| left.name.cmp(&right.name));
-    for (manifest, source) in manifests {
+    let (available, unavailable) = catalog_packages(&catalog);
+    for (manifest, source) in available {
         let runtime = match manifest.runtime { mcp_cli::manifest::Runtime::Python { .. } => "python", mcp_cli::manifest::Runtime::Binary => "binary" };
         let scaffold = if manifest.scaffold.is_some() { "scaffold" } else { "no scaffold" };
         println!("{}@{} ({runtime}, {scaffold})", manifest.name, manifest.version);
@@ -92,6 +89,22 @@ fn catalog_list() {
         }
         println!("  source: {source}");
     }
+    for reason in unavailable {
+        println!("unavailable: {reason}");
+    }
+}
+
+/// The catalog's usable packages sorted by name, and why each remaining source is unusable, in catalog order.
+fn catalog_packages(catalog: &mcp_cli::catalog::Catalog) -> (Vec<(mcp_cli::manifest::PackageManifest, &str)>, Vec<String>) {
+    let (mut available, mut unavailable) = (Vec::new(), Vec::new());
+    for entry in &catalog.mcp {
+        match catalog_source_manifest(std::path::Path::new(&entry.source)) {
+            Ok(manifest) => available.push((manifest, entry.source.as_str())),
+            Err(reason) => unavailable.push(reason),
+        }
+    }
+    available.sort_by(|(left, _), (right, _)| left.name.cmp(&right.name));
+    (available, unavailable)
 }
 
 /// The root and parsed `.mcpctl.toml` of the project containing the working directory; fatal outside a project.
