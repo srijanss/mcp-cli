@@ -223,3 +223,25 @@ fn init_merges_every_mcps_entries_into_shared_config_and_a_second_run_changes_no
     let stdout = String::from_utf8_lossy(&second.stdout);
     assert!(!stdout.contains("Merged") && !stdout.contains("Copied"), "{stdout}");
 }
+
+#[test]
+fn init_names_the_mcp_that_failed_and_still_initializes_the_rest() {
+    let (workspace, project) = workspace_with_project();
+    let state_home = workspace.join("state");
+    add_shared_config(&workspace, "project-mcp", "project-mcp");
+    fs::write(project.join(".mcp.json"), "{ not json").unwrap();
+    assert!(mcpctl(&project, &state_home, &["sync"]).status.success());
+
+    let output = mcpctl(&project, &state_home, &["init"]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("project-mcp@0.4.3") && stderr.contains(".mcp.json"), "{stderr}");
+    assert!(!stderr.contains("design-advisor-mcp"), "only the failing MCP is blamed: {stderr}");
+    assert_eq!(fs::read_to_string(project.join(".mcp.json")).unwrap(), "{ not json", "the unparseable file is left untouched");
+    assert_eq!(
+        fs::read_to_string(project.join("docs/design-advisor-mcp.md")).unwrap(),
+        "design-advisor-mcp@0.2.0",
+        "MCPs after the failing one are still initialized"
+    );
+}
