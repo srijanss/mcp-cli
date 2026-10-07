@@ -85,3 +85,55 @@ source = "../project-mcp"
 
     assert!(error.contains("project-mcp"), "{error}");
 }
+
+#[test]
+fn project_manifest_rejects_duplicate_mcp_names() {
+    let error = parse_project_manifest(
+        r#"
+[project]
+name = "checkout-service"
+
+[[mcp]]
+name = "project-mcp"
+version = "^0.4"
+source = "../project-mcp"
+
+[[mcp]]
+name = "project-mcp"
+version = "^0.5"
+source = "../project-mcp-fork"
+"#,
+    )
+    .unwrap_err();
+
+    assert!(error.contains("duplicate"), "{error}");
+    assert!(error.contains("project-mcp"), "{error}");
+}
+
+#[test]
+fn project_manifest_rejects_non_adjacent_duplicate_mcp_names() {
+    let error = parse_project_manifest(
+        r#"
+[project]
+name = "checkout-service"
+
+[[mcp]]
+name = "project-mcp"
+version = "^0.4"
+source = "../project-mcp"
+
+[[mcp]]
+name = "outside-in-tdd-mcp"
+version = "^1.3"
+source = "../outside-in-tdd-mcp"
+
+[[mcp]]
+name = "project-mcp"
+version = "^0.4"
+source = "../project-mcp"
+"#,
+    )
+    .unwrap_err();
+
+    assert!(error.contains("duplicate mcp 'project-mcp'"), "{error}");
+}
