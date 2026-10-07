@@ -1,6 +1,6 @@
 fn main() {
     use clap::Parser;
-    use mcp_cli::cli::{Cli, Command};
+    use mcp_cli::cli::{CatalogCommand, Cli, Command};
 
     match Cli::parse().command {
         Command::Install { project } => install_package(&project),
@@ -14,7 +14,52 @@ fn main() {
         Command::Init { package: Some(package), target } => init_package(&package, target.as_deref().map(std::path::Path::new)),
         Command::Init { package: None, .. } => init_project(),
         Command::Sync { locked } => sync_project(locked),
+        Command::Catalog { command: CatalogCommand::Add { path } } => catalog_add(&path),
     }
+}
+
+fn config_home() -> std::path::PathBuf {
+    mcp_cli::paths::config_home_from(
+        std::env::var_os("MCPCTL_CONFIG_HOME").map(std::path::PathBuf::from),
+        std::env::var_os("HOME").map(std::path::PathBuf::from),
+        std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from),
+    )
+    .unwrap_or_else(|error| fatal(error))
+}
+
+/// The catalog at `catalog_path`; empty when the file does not exist yet.
+fn read_catalog(catalog_path: &std::path::Path) -> mcp_cli::catalog::Catalog {
+    let contents = match std::fs::read_to_string(catalog_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => fatal(format!("cannot read {}: {error}", catalog_path.display())),
+    };
+    mcp_cli::catalog::parse_catalog(&contents).unwrap_or_else(|error| fatal(format!("{} is malformed: {error}", catalog_path.display())))
+}
+
+/// The validated `mcpctl.toml` of a catalog source, or why the source is unusable.
+fn catalog_source_manifest(source: &std::path::Path) -> Result<mcp_cli::manifest::PackageManifest, String> {
+    if !source.is_dir() {
+        return Err(format!("{} does not exist or is not a directory", source.display()));
+    }
+    let contents = match std::fs::read_to_string(source.join("mcpctl.toml")) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(format!("{} has no mcpctl.toml", source.display())),
+        Err(error) => return Err(format!("cannot read {}: {error}", source.join("mcpctl.toml").display())),
+    };
+    mcp_cli::manifest::parse_manifest(&contents).map_err(|error| format!("invalid mcpctl.toml in {}: {error}", source.display()))
+}
+
+fn catalog_add(path: &str) {
+    let source = std::fs::canonicalize(path).unwrap_or_else(|_| fatal(format!("cannot add {path} to the catalog: {path} does not exist")));
+    let manifest = catalog_source_manifest(&source).unwrap_or_else(|error| fatal(format!("cannot add {path} to the catalog: {error}")));
+    let catalog_path = config_home().join("catalog.toml");
+    let mut catalog = read_catalog(&catalog_path);
+    catalog.mcp.push(mcp_cli::catalog::CatalogEntry { source: source.display().to_string() });
+    std::fs::create_dir_all(catalog_path.parent().expect("catalog.toml has a parent"))
+        .and_then(|()| std::fs::write(&catalog_path, mcp_cli::catalog::render_catalog(&catalog)))
+        .unwrap_or_else(|error| fatal(format!("cannot write {}: {error}", catalog_path.display())));
+    println!("Added {}@{} ({})", manifest.name, manifest.version, source.display());
 }
 
 /// The root and parsed `.mcpctl.toml` of the project containing the working directory; fatal outside a project.

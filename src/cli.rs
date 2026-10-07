@@ -48,4 +48,18 @@ pub enum Command {
         #[arg(long)]
         locked: bool,
     },
+    /// Manage the local catalog of MCP sources that setup offers
+    Catalog {
+        #[command(subcommand)]
+        command: CatalogCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum CatalogCommand {
+    /// Add a local MCP package source to the catalog
+    Add {
+        #[arg(value_name = "package path")]
+        path: String,
+    },
 }
