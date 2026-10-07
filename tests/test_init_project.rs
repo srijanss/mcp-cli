@@ -96,3 +96,41 @@ fn init_without_an_mcp_scaffolds_every_locked_project_mcp_into_the_project_root(
     assert!(!nested.join("docs").exists(), "scaffolds land in the project root, not the current directory");
     assert!(!workspace.join("docs").exists());
 }
+
+#[test]
+fn init_uses_a_satisfying_installed_version_for_unlocked_mcps_and_names_any_it_cannot_resolve() {
+    let (workspace, project) = workspace_with_project();
+    let state_home = workspace.join("state");
+    assert!(mcpctl(&workspace, &state_home, &["install", "project-mcp"]).status.success());
+    assert!(mcpctl(&workspace, &state_home, &["install", "design-advisor-mcp"]).status.success());
+
+    let unlocked = mcpctl(&project, &state_home, &["init"]);
+
+    assert!(unlocked.status.success(), "{}", String::from_utf8_lossy(&unlocked.stderr));
+    assert!(!project.join(".mcpctl.lock").exists(), "init never writes the lock");
+    assert_eq!(fs::read_to_string(project.join("docs/project-mcp.md")).unwrap(), "project-mcp@0.4.3");
+    assert_eq!(fs::read_to_string(project.join("docs/design-advisor-mcp.md")).unwrap(), "design-advisor-mcp@0.2.0");
+
+    write_package(&workspace, "project-mcp-next", "project-mcp", "0.5.0");
+    assert!(mcpctl(&workspace, &state_home, &["install", "project-mcp-next"]).status.success());
+    assert!(mcpctl(&workspace, &state_home, &["use", "project-mcp@0.5.0"]).status.success());
+
+    let unsatisfied = mcpctl(&project, &state_home, &["init"]);
+
+    let stderr = String::from_utf8_lossy(&unsatisfied.stderr);
+    assert!(!unsatisfied.status.success());
+    assert!(stderr.contains("project-mcp") && stderr.contains("^0.4") && stderr.contains("mcpctl sync"), "{stderr}");
+
+    fs::write(
+        project.join(".mcpctl.lock"),
+        "version = 1\n\n[[mcp]]\nname = \"project-mcp\"\nversion = \"0.4.9\"\nsource = \"../project-mcp\"\nmanifest_digest = \"sha256:abc123\"\n",
+    )
+    .unwrap();
+
+    let not_installed = mcpctl(&project, &state_home, &["init"]);
+
+    let stderr = String::from_utf8_lossy(&not_installed.stderr);
+    assert!(!not_installed.status.success());
+    assert!(stderr.contains("project-mcp@0.4.9"), "{stderr}");
+    assert!(stderr.contains(&project.join(".mcpctl.lock").display().to_string()), "{stderr}");
+}

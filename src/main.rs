@@ -99,10 +99,30 @@ fn init_project() {
         mcp_cli::project_lock::parse_project_lock(&contents)
             .unwrap_or_else(|error| fatal(format!("{} is malformed: {error}", lock_path.display())))
     });
+    let state_home = mcp_cli::paths::data_home_from(std::env::var_os("MCPCTL_HOME").map(std::path::PathBuf::from)).unwrap_or_else(|error| fatal(error));
+    let registry = mcp_cli::registry::load_registry(&state_home.join("registry.json")).unwrap_or_else(|error| fatal(format!("cannot read registry: {error}")));
     for declared in &manifest.mcp {
-        let version = lock.iter().flat_map(|lock| &lock.mcp).find(|locked| locked.name == declared.name).map(|locked| &locked.version)
-            .unwrap_or_else(|| fatal(format!("mcp '{}' is not locked; run `mcpctl sync` first", declared.name)));
+        let version = project_mcp_version(declared, lock.as_ref(), &lock_path, &registry).unwrap_or_else(|error| fatal(error));
         init_package(&format!("{}@{version}", declared.name), Some(&root));
+    }
+}
+
+/// The version `init` scaffolds for a declared MCP: its locked version, otherwise its active
+/// installed version when that satisfies the declared constraint.
+fn project_mcp_version(declared: &mcp_cli::project::McpDeclaration, lock: Option<&mcp_cli::project_lock::ProjectLock>, lock_path: &std::path::Path, registry: &mcp_cli::registry::Registry) -> Result<String, String> {
+    let name = &declared.name;
+    let package = registry.packages.get(name);
+    if let Some(locked) = lock.and_then(|lock| lock.mcp.iter().find(|locked| &locked.name == name)) {
+        if package.is_some_and(|package| package.versions.iter().any(|installed| installed.version == locked.version)) {
+            return Ok(locked.version.clone());
+        }
+        return Err(format!("{name}@{} is pinned by {} but is not installed; run `mcpctl sync` to install it", locked.version, lock_path.display()));
+    }
+    let constraint = semver::VersionReq::parse(&declared.version).map_err(|error| format!("mcp '{name}' has invalid version constraint '{}': {error}", declared.version))?;
+    match package.and_then(|package| package.active_version.as_ref()) {
+        Some(active) if semver::Version::parse(active).is_ok_and(|version| constraint.matches(&version)) => Ok(active.clone()),
+        Some(active) => Err(format!("mcp '{name}' active version {active} does not satisfy '{}'; run `mcpctl sync` to install a matching version", declared.version)),
+        None => Err(format!("mcp '{name}' is not installed; run `mcpctl sync` to install it")),
     }
 }
 
