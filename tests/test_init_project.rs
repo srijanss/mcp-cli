@@ -265,3 +265,19 @@ fn init_on_a_state_home_with_nothing_installed_names_each_project_mcp_and_sugges
 
     assert!(empty.status.success(), "a project with no MCPs has nothing to initialize: {}", String::from_utf8_lossy(&empty.stderr));
 }
+
+#[test]
+fn init_fails_naming_the_lock_file_when_the_project_lock_cannot_be_read() {
+    let (workspace, project) = workspace_with_project();
+    let state_home = workspace.join("state");
+    assert!(mcpctl(&workspace, &state_home, &["install", "project-mcp"]).status.success());
+    assert!(mcpctl(&workspace, &state_home, &["install", "design-advisor-mcp"]).status.success());
+    fs::create_dir(project.join(".mcpctl.lock")).unwrap();
+
+    let output = mcpctl(&project, &state_home, &["init"]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains(&format!("cannot read {}", project.join(".mcpctl.lock").display())), "{stderr}");
+    assert!(!project.join("docs").exists(), "an unreadable lock must not fall back to the active versions");
+}

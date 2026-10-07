@@ -107,10 +107,7 @@ fn verify_installed_entrypoint(version_root: &std::path::Path) -> Result<(), Str
 fn init_project() {
     let (root, manifest) = current_project();
     let lock_path = root.join(".mcpctl.lock");
-    let lock = std::fs::read_to_string(&lock_path).ok().map(|contents| {
-        mcp_cli::project_lock::parse_project_lock(&contents)
-            .unwrap_or_else(|error| fatal(format!("{} is malformed: {error}", lock_path.display())))
-    });
+    let lock = read_project_lock(&lock_path);
     let state_home = mcp_cli::paths::data_home_from(std::env::var_os("MCPCTL_HOME").map(std::path::PathBuf::from)).unwrap_or_else(|error| fatal(error));
     let registry_path = state_home.join("registry.json");
     // A state home that has never had an install has no registry yet: nothing is installed.
