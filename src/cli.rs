@@ -43,5 +43,9 @@ pub enum Command {
         target: Option<String>,
     },
     /// Lock and install the MCPs declared in the project's .mcpctl.toml
-    Sync,
+    Sync {
+        /// Install exactly the versions in .mcpctl.lock without rewriting it
+        #[arg(long)]
+        locked: bool,
+    },
 }

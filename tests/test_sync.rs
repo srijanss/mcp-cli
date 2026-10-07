@@ -135,3 +135,20 @@ fn sync_fails_naming_a_reused_version_whose_runtime_is_broken() {
     assert!(stderr.contains("project-mcp@0.4.3"), "{stderr}");
     assert!(stderr.contains("entrypoint"), "{stderr}");
 }
+
+#[test]
+fn locked_sync_on_a_fresh_store_installs_the_committed_lock_without_rewriting_it() {
+    let (workspace, project) = workspace_with_project();
+    assert!(mcpctl(&project, &workspace.join("first-machine"), &["sync"]).status.success());
+    let committed_lock = fs::read(project.join(".mcpctl.lock")).unwrap();
+    let lock_modified = fs::metadata(project.join(".mcpctl.lock")).unwrap().modified().unwrap();
+    let fresh_state = workspace.join("ci-machine");
+
+    let output = mcpctl(&project, &fresh_state, &["sync", "--locked"]);
+
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(fs::read(project.join(".mcpctl.lock")).unwrap(), committed_lock);
+    assert_eq!(fs::metadata(project.join(".mcpctl.lock")).unwrap().modified().unwrap(), lock_modified);
+    assert_eq!(mcpctl(&project, &fresh_state, &["run", "project-mcp"]).stdout, b"project-mcp@0.4.3");
+    assert_eq!(mcpctl(&project, &fresh_state, &["run", "design-advisor-mcp"]).stdout, b"design-advisor-mcp@0.2.0");
+}
