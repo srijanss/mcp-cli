@@ -94,3 +94,29 @@ fn sync_locks_and_installs_every_project_mcp_without_touching_anything_else() {
     assert_eq!(fs::read_to_string(project.join(".venv/marker")).unwrap(), "project venv");
     assert_eq!(fs::read_dir(project.join(".venv")).unwrap().count(), 1);
 }
+
+#[test]
+fn repeated_sync_reuses_installed_versions_and_projects_share_them() {
+    let (workspace, project) = workspace_with_project();
+    let state_home = workspace.join("state");
+    let second_project = workspace.join("billing-service");
+    fs::create_dir_all(&second_project).unwrap();
+    fs::write(
+        second_project.join(".mcpctl.toml"),
+        "[project]\nname = \"billing-service\"\n\n[[mcp]]\nname = \"project-mcp\"\nversion = \"^0.4\"\nsource = \"../project-mcp\"\n",
+    )
+    .unwrap();
+    assert!(mcpctl(&project, &state_home, &["sync"]).status.success());
+    let registry_before = fs::read(state_home.join("registry.json")).unwrap();
+    let lock_modified = fs::metadata(project.join(".mcpctl.lock")).unwrap().modified().unwrap();
+
+    let again = mcpctl(&project, &state_home, &["sync"]);
+    let shared = mcpctl(&second_project, &state_home, &["sync"]);
+
+    assert!(again.status.success(), "{}", String::from_utf8_lossy(&again.stderr));
+    assert!(shared.status.success(), "{}", String::from_utf8_lossy(&shared.stderr));
+    assert_eq!(fs::read(state_home.join("registry.json")).unwrap(), registry_before);
+    assert_eq!(fs::metadata(project.join(".mcpctl.lock")).unwrap().modified().unwrap(), lock_modified);
+    assert_eq!(fs::read_dir(state_home.join("packages/project-mcp")).unwrap().count(), 1);
+    assert_eq!(mcpctl(&second_project, &state_home, &["run", "project-mcp"]).stdout, b"project-mcp@0.4.3");
+}

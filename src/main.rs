@@ -28,8 +28,13 @@ fn sync_project() {
         .unwrap_or_else(|error| fatal(format!("{} is invalid: {error}", manifest_path.display())));
     let lock = mcp_cli::project_lock::resolve_project_lock(&manifest, &root).unwrap_or_else(|error| fatal(error));
     mcp_cli::project_lock::write_project_lock(&root, &lock).unwrap_or_else(|error| fatal(error));
+    let state_home = mcp_cli::paths::data_home_from(std::env::var_os("MCPCTL_HOME").map(std::path::PathBuf::from))
+        .unwrap_or_else(|error| fatal(error));
     for locked in &lock.mcp {
-        install_package(&root.join(&locked.source).to_string_lossy());
+        // Installed versions are immutable, so one already in the shared store is reused as-is.
+        if !state_home.join("packages").join(&locked.name).join(&locked.version).exists() {
+            install_package(&root.join(&locked.source).to_string_lossy());
+        }
     }
 }
 
