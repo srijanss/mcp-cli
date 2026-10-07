@@ -164,3 +164,62 @@ fn init_skips_a_project_mcp_without_a_scaffold_and_still_initializes_the_others(
     assert!(!single.status.success(), "naming an MCP without a scaffold is still an error");
     assert!(String::from_utf8_lossy(&single.stderr).contains("does not ship a scaffold"), "{}", String::from_utf8_lossy(&single.stderr));
 }
+
+/// Adds templates to an MCP source that merge its server entry into the project's shared `.mcp.json` and `.codex/config.toml`.
+fn add_shared_config(workspace: &Path, dir: &str, name: &str) {
+    let source = workspace.join(dir);
+    fs::write(source.join("templates/mcp.json"), format!(r#"{{"mcpServers":{{"{name}":{{"command":"mcpctl","args":["run","{name}"]}}}}}}"#)).unwrap();
+    fs::write(source.join("templates/config.toml"), format!("[mcp_servers.{name}]\ncommand = \"mcpctl\"\nargs = [\"run\", \"{name}\"]\n")).unwrap();
+    let mut manifest = fs::read_to_string(source.join("mcpctl.toml")).unwrap();
+    manifest.push_str(
+        "\n[[scaffold.files]]\nfrom = \"templates/mcp.json\"\nto = \".mcp.json\"\nmerge = \"json\"\n\n\
+         [[scaffold.files]]\nfrom = \"templates/config.toml\"\nto = \".codex/config.toml\"\nmerge = \"toml\"\n",
+    );
+    fs::write(source.join("mcpctl.toml"), manifest).unwrap();
+}
+
+/// Every file under `root`, keyed by relative path, with its contents.
+fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    let mut files = std::collections::BTreeMap::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                files.insert(path.strip_prefix(root).unwrap().to_path_buf(), fs::read(&path).unwrap());
+            }
+        }
+    }
+    files
+}
+
+#[test]
+fn init_merges_every_mcps_entries_into_shared_config_and_a_second_run_changes_nothing() {
+    let (workspace, project) = workspace_with_project();
+    let state_home = workspace.join("state");
+    add_shared_config(&workspace, "project-mcp", "project-mcp");
+    add_shared_config(&workspace, "design-advisor-mcp", "design-advisor-mcp");
+    fs::write(project.join(".mcp.json"), r#"{"mcpServers":{"mine":{"command":"my-server"}}}"#).unwrap();
+    assert!(mcpctl(&project, &state_home, &["sync"]).status.success());
+
+    let first = mcpctl(&project, &state_home, &["init"]);
+
+    assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
+    let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(project.join(".mcp.json")).unwrap()).unwrap();
+    assert_eq!(json["mcpServers"]["mine"]["command"], "my-server", "the user's own entry is kept");
+    assert_eq!(json["mcpServers"]["project-mcp"]["args"], serde_json::json!(["run", "project-mcp"]));
+    assert_eq!(json["mcpServers"]["design-advisor-mcp"]["args"], serde_json::json!(["run", "design-advisor-mcp"]));
+    let toml: toml::Value = fs::read_to_string(project.join(".codex/config.toml")).unwrap().parse().unwrap();
+    assert_eq!(toml["mcp_servers"]["project-mcp"]["command"].as_str(), Some("mcpctl"));
+    assert_eq!(toml["mcp_servers"]["design-advisor-mcp"]["command"].as_str(), Some("mcpctl"));
+    let after_first = snapshot(&project);
+
+    let second = mcpctl(&project, &state_home, &["init"]);
+
+    assert!(second.status.success(), "{}", String::from_utf8_lossy(&second.stderr));
+    assert_eq!(snapshot(&project), after_first, "a repeated init changes no file");
+    let stdout = String::from_utf8_lossy(&second.stdout);
+    assert!(!stdout.contains("Merged") && !stdout.contains("Copied"), "{stdout}");
+}
