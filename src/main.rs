@@ -48,10 +48,8 @@ fn sync_project(locked: bool) {
     let lock = mcp_cli::project_lock::resolve_project_lock(&manifest, &root).unwrap_or_else(|error| fatal(error));
     if locked {
         let lock_path = root.join(".mcpctl.lock");
-        let committed = std::fs::read_to_string(&lock_path)
-            .unwrap_or_else(|error| fatal(format!("--locked requires {}: {error}", lock_path.display())));
-        let committed = mcp_cli::project_lock::parse_project_lock(&committed)
-            .unwrap_or_else(|error| fatal(format!("{} is malformed: {error}", lock_path.display())));
+        let committed = read_project_lock(&lock_path)
+            .unwrap_or_else(|| fatal(format!("--locked requires {}, which does not exist", lock_path.display())));
         if let Some(name) = mcp_cli::project_lock::first_lock_mismatch(&committed, &lock) {
             fatal(format!("{} is out of date for mcp '{name}'; run `mcpctl sync` to update it", lock_path.display()));
         }

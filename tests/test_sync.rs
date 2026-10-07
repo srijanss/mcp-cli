@@ -178,3 +178,36 @@ fn locked_sync_fails_without_installing_when_the_lock_is_missing_or_stale() {
     assert_eq!(fs::read(project.join(".mcpctl.lock")).unwrap(), committed_lock);
     assert!(!fresh_state.join("packages").exists());
 }
+
+#[test]
+fn locked_sync_fails_naming_a_malformed_lock_without_installing_or_rewriting_it() {
+    let (workspace, project) = workspace_with_project();
+    let fresh_state = workspace.join("ci-machine");
+    fs::write(project.join(".mcpctl.lock"), "version = 1\n[[mcp]\nbroken").unwrap();
+
+    let output = mcpctl(&project, &fresh_state, &["sync", "--locked"]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains(&format!("{} is malformed", project.join(".mcpctl.lock").display())), "{stderr}");
+    assert_eq!(fs::read_to_string(project.join(".mcpctl.lock")).unwrap(), "version = 1\n[[mcp]\nbroken");
+    assert!(!fresh_state.join("packages").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn sync_fails_naming_a_reused_version_whose_entrypoint_is_not_executable() {
+    use std::os::unix::fs::PermissionsExt;
+    let (workspace, project) = workspace_with_project();
+    let state_home = workspace.join("state");
+    assert!(mcpctl(&project, &state_home, &["sync"]).status.success());
+    let entrypoint = state_home.join("packages/project-mcp/0.4.3/runtime/bin/bin/project-mcp");
+    fs::set_permissions(&entrypoint, fs::Permissions::from_mode(0o644)).unwrap();
+
+    let output = mcpctl(&project, &state_home, &["sync"]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("project-mcp@0.4.3 is installed but broken"), "{stderr}");
+    assert!(stderr.contains(&format!("entrypoint {} is not executable", entrypoint.display())), "{stderr}");
+}
