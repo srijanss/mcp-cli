@@ -297,3 +297,19 @@ fn a_project_that_declares_no_mcps_syncs_and_initializes_without_error() {
     assert!(init.status.success(), "{}", String::from_utf8_lossy(&init.stderr));
     assert!(project.join(".mcpctl.lock").is_file(), "sync still records an (empty) lock");
 }
+
+#[test]
+fn init_fails_naming_a_malformed_lock_without_falling_back_to_the_active_versions() {
+    let (workspace, project) = workspace_with_project();
+    let state_home = workspace.join("state");
+    assert!(mcpctl(&workspace, &state_home, &["install", "project-mcp"]).status.success());
+    assert!(mcpctl(&workspace, &state_home, &["install", "design-advisor-mcp"]).status.success());
+    fs::write(project.join(".mcpctl.lock"), "version = 1\n[[mcp]\nbroken").unwrap();
+
+    let output = mcpctl(&project, &state_home, &["init"]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains(&format!("{} is malformed", project.join(".mcpctl.lock").display())), "{stderr}");
+    assert!(!project.join("docs").exists(), "a malformed lock must not fall back to the active versions");
+}
