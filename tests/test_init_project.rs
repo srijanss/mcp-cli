@@ -134,3 +134,33 @@ fn init_uses_a_satisfying_installed_version_for_unlocked_mcps_and_names_any_it_c
     assert!(stderr.contains("project-mcp@0.4.9"), "{stderr}");
     assert!(stderr.contains(&project.join(".mcpctl.lock").display().to_string()), "{stderr}");
 }
+
+#[test]
+fn init_skips_a_project_mcp_without_a_scaffold_and_still_initializes_the_others() {
+    let (workspace, project) = workspace_with_project();
+    let state_home = workspace.join("state");
+    let plain = workspace.join("plain-mcp");
+    fs::create_dir_all(&plain).unwrap();
+    fs::write(plain.join("mcpctl.toml"), "name = \"plain-mcp\"\nversion = \"1.0.0\"\n\n[runtime]\ntype = \"binary\"\n\n[install]\nentrypoint = \"plain-mcp\"\n").unwrap();
+    fs::write(plain.join("plain-mcp"), "#!/bin/sh\nexit 0\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(plain.join("plain-mcp"), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut manifest = fs::read_to_string(project.join(".mcpctl.toml")).unwrap();
+    manifest = manifest.replacen("[[mcp]]", "[[mcp]]\nname = \"plain-mcp\"\nversion = \"^1\"\nsource = \"../plain-mcp\"\n\n[[mcp]]", 1);
+    fs::write(project.join(".mcpctl.toml"), manifest).unwrap();
+    assert!(mcpctl(&project, &state_home, &["sync"]).status.success());
+
+    let output = mcpctl(&project, &state_home, &["init"]);
+    let single = mcpctl(&project, &state_home, &["init", "plain-mcp"]);
+
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Skipping plain-mcp@1.0.0 (no [scaffold])"), "{stdout}");
+    assert_eq!(fs::read_to_string(project.join("docs/project-mcp.md")).unwrap(), "project-mcp@0.4.3");
+    assert_eq!(fs::read_to_string(project.join("docs/design-advisor-mcp.md")).unwrap(), "design-advisor-mcp@0.2.0");
+    assert!(!single.status.success(), "naming an MCP without a scaffold is still an error");
+    assert!(String::from_utf8_lossy(&single.stderr).contains("does not ship a scaffold"), "{}", String::from_utf8_lossy(&single.stderr));
+}

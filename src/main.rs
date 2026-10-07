@@ -103,7 +103,10 @@ fn init_project() {
     let registry = mcp_cli::registry::load_registry(&state_home.join("registry.json")).unwrap_or_else(|error| fatal(format!("cannot read registry: {error}")));
     for declared in &manifest.mcp {
         let version = project_mcp_version(declared, lock.as_ref(), &lock_path, &registry).unwrap_or_else(|error| fatal(error));
-        init_package(&format!("{}@{version}", declared.name), Some(&root));
+        match installed_scaffold(&state_home, &declared.name, &version) {
+            (source, Some(scaffold)) => apply_scaffold(&declared.name, &source, &scaffold, &root),
+            (_, None) => println!("Skipping {}@{version} (no [scaffold])", declared.name),
+        }
     }
 }
 
@@ -133,13 +136,24 @@ fn init_package(selector: &str, target: Option<&std::path::Path>) {
     let package = registry.packages.get(name).unwrap_or_else(|| fatal(format!("{name} is not installed")));
     let version = requested_version.map(str::to_owned).or_else(|| package.active_version.clone()).unwrap_or_else(|| fatal(format!("{name} has no active version")));
     if !package.versions.iter().any(|installed| installed.version == version) { fatal(format!("{name}@{version} is not installed")); }
-    let source = state_home.join("packages").join(name).join(&version).join("source");
+    let (source, scaffold) = installed_scaffold(&state_home, name, &version);
+    let scaffold = scaffold.unwrap_or_else(|| fatal(format!("{name}@{version} does not ship a scaffold")));
+    let target = target.map(std::path::Path::to_path_buf).unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|error| fatal(error.to_string())));
+    apply_scaffold(name, &source, &scaffold, &target);
+}
+
+/// The source snapshot of an installed version and the `[scaffold]` its manifest declares, if any.
+fn installed_scaffold(state_home: &std::path::Path, name: &str, version: &str) -> (std::path::PathBuf, Option<mcp_cli::manifest::Scaffold>) {
+    let source = state_home.join("packages").join(name).join(version).join("source");
     let manifest = std::fs::read_to_string(source.join("mcpctl.toml"))
         .map_err(|error| error.to_string())
         .and_then(|contents| mcp_cli::manifest::parse_manifest(&contents))
         .unwrap_or_else(|error| fatal(format!("cannot read installed manifest: {error}")));
-    let scaffold = manifest.scaffold.unwrap_or_else(|| fatal(format!("{name}@{version} does not ship a scaffold")));
-    let target = target.map(std::path::Path::to_path_buf).unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|error| fatal(error.to_string())));
+    (source, manifest.scaffold)
+}
+
+/// Copies and merges `scaffold` from an installed `source` snapshot into `target`, then reports requirements and hints.
+fn apply_scaffold(name: &str, source: &std::path::Path, scaffold: &mcp_cli::manifest::Scaffold, target: &std::path::Path) {
     // `exclude` filters the `dirs` copies only; a file named in `files` is always copied.
     for file in &scaffold.files {
         let destination = target.join(&file.to);
@@ -148,12 +162,12 @@ fn init_package(selector: &str, target: Option<&std::path::Path>) {
                 .unwrap_or_else(|error| fatal(format!("cannot merge {}: {error}", file.to)));
             continue;
         }
-        copy_scaffold_tree(&source, &target, std::path::Path::new(&file.from), std::path::Path::new(&file.to), &[])
+        copy_scaffold_tree(source, target, std::path::Path::new(&file.from), std::path::Path::new(&file.to), &[])
             .unwrap_or_else(|error| fatal(format!("cannot copy {}: {error}", file.from)));
     }
     for dir in &scaffold.dirs {
         let relative = std::path::Path::new(dir);
-        copy_scaffold_tree(&source, &target, relative, relative, &scaffold.exclude)
+        copy_scaffold_tree(source, target, relative, relative, &scaffold.exclude)
             .unwrap_or_else(|error| fatal(format!("cannot copy {dir}: {error}")));
     }
     for tool in scaffold.requires.iter().filter(|tool| !on_path(tool)) {
