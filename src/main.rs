@@ -79,8 +79,8 @@ fn catalog_list() {
         println!("Catalog is empty\nAdd an MCP with: mcpctl catalog add <path>");
         return;
     }
-    let (available, unavailable) = catalog_packages(&catalog);
-    for (manifest, source) in available {
+    let packages = catalog_packages(&catalog);
+    for (manifest, source) in packages.available {
         let runtime = match manifest.runtime { mcp_cli::manifest::Runtime::Python { .. } => "python", mcp_cli::manifest::Runtime::Binary => "binary" };
         let scaffold = if manifest.scaffold.is_some() { "scaffold" } else { "no scaffold" };
         println!("{}@{} ({runtime}, {scaffold})", manifest.name, manifest.version);
@@ -89,22 +89,37 @@ fn catalog_list() {
         }
         println!("  source: {source}");
     }
-    for reason in unavailable {
+    for reason in packages.unavailable {
         println!("unavailable: {reason}");
+    }
+    for duplicate in packages.duplicates {
+        println!("WARNING: {duplicate}");
     }
 }
 
-/// The catalog's usable packages sorted by name, and why each remaining source is unusable, in catalog order.
-fn catalog_packages(catalog: &mcp_cli::catalog::Catalog) -> (Vec<(mcp_cli::manifest::PackageManifest, &str)>, Vec<String>) {
-    let (mut available, mut unavailable) = (Vec::new(), Vec::new());
+/// A catalog read against its sources: usable packages sorted by name, then why the rest were left out.
+struct CatalogPackages<'a> {
+    available: Vec<(mcp_cli::manifest::PackageManifest, &'a str)>,
+    unavailable: Vec<String>,
+    duplicates: Vec<String>,
+}
+
+/// Reads every catalog source; when two sources declare the same name, the one listed first wins.
+fn catalog_packages(catalog: &mcp_cli::catalog::Catalog) -> CatalogPackages<'_> {
+    let mut packages = CatalogPackages { available: Vec::new(), unavailable: Vec::new(), duplicates: Vec::new() };
     for entry in &catalog.mcp {
         match catalog_source_manifest(std::path::Path::new(&entry.source)) {
-            Ok(manifest) => available.push((manifest, entry.source.as_str())),
-            Err(reason) => unavailable.push(reason),
+            Ok(manifest) => match packages.available.iter().find(|(kept, _)| kept.name == manifest.name) {
+                Some((_, first)) => packages.duplicates.push(format!(
+                    "{} is provided by both {first} and {}; using {first}", manifest.name, entry.source
+                )),
+                None => packages.available.push((manifest, entry.source.as_str())),
+            },
+            Err(reason) => packages.unavailable.push(reason),
         }
     }
-    available.sort_by(|(left, _), (right, _)| left.name.cmp(&right.name));
-    (available, unavailable)
+    packages.available.sort_by(|(left, _), (right, _)| left.name.cmp(&right.name));
+    packages
 }
 
 /// The root and parsed `.mcpctl.toml` of the project containing the working directory; fatal outside a project.

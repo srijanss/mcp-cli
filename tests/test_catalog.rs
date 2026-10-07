@@ -220,3 +220,31 @@ fn catalog_list_reports_sources_that_became_unusable_and_still_lists_the_rest() 
     );
     assert!(listing.contains(&format!("unavailable: invalid mcpctl.toml in {}", broken.display())), "{listing}");
 }
+
+#[test]
+fn catalog_list_keeps_the_first_source_when_a_hand_edited_catalog_repeats_a_name() {
+    let workspace = temporary_dir();
+    let original = write_package(&workspace, "project-mcp", "project-mcp", "0.4.3");
+    let fork = write_package(&workspace, "project-mcp-fork", "project-mcp", "0.5.0");
+    fs::create_dir_all(workspace.join("config")).unwrap();
+    fs::write(
+        workspace.join("config/catalog.toml"),
+        format!("[[mcp]]\nsource = {:?}\n\n[[mcp]]\nsource = {:?}\n", original.display().to_string(), fork.display().to_string()),
+    )
+    .unwrap();
+
+    let output = mcpctl(&workspace, &workspace, &["catalog", "list"]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(
+        stdout(&output),
+        format!(
+            "project-mcp@0.4.3 (binary, scaffold)\n  The project-mcp server\n  source: {}\n\
+             WARNING: project-mcp is provided by both {} and {}; using {}\n",
+            original.display(),
+            original.display(),
+            fork.display(),
+            original.display()
+        )
+    );
+}
