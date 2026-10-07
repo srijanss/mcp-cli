@@ -11,13 +11,14 @@ fn main() {
         Command::Use { selector } => use_package(&selector),
         Command::Update { package, source } => update_package(&package, &source),
         Command::Doctor => doctor(),
-        Command::Init { package, target } => init_package(&package, target.as_deref()),
+        Command::Init { package: Some(package), target } => init_package(&package, target.as_deref().map(std::path::Path::new)),
+        Command::Init { package: None, .. } => init_project(),
         Command::Sync { locked } => sync_project(locked),
     }
 }
 
-/// Locks the MCPs declared by the project containing the working directory and installs each locked version.
-fn sync_project(locked: bool) {
+/// The root and parsed `.mcpctl.toml` of the project containing the working directory; fatal outside a project.
+fn current_project() -> (std::path::PathBuf, mcp_cli::project::ProjectManifest) {
     let directory = std::env::current_dir().unwrap_or_else(|error| fatal(format!("cannot read current directory: {error}")));
     let root = mcp_cli::project::find_project_root(&directory)
         .unwrap_or_else(|| fatal(format!("no .mcpctl.toml found in {} or any parent directory", directory.display())));
@@ -26,6 +27,12 @@ fn sync_project(locked: bool) {
         .map_err(|error| error.to_string())
         .and_then(|contents| mcp_cli::project::parse_project_manifest(&contents))
         .unwrap_or_else(|error| fatal(format!("{} is invalid: {error}", manifest_path.display())));
+    (root, manifest)
+}
+
+/// Locks the MCPs declared by the project containing the working directory and installs each locked version.
+fn sync_project(locked: bool) {
+    let (root, manifest) = current_project();
     let lock = mcp_cli::project_lock::resolve_project_lock(&manifest, &root).unwrap_or_else(|error| fatal(error));
     if locked {
         let lock_path = root.join(".mcpctl.lock");
@@ -84,7 +91,22 @@ fn verify_installed_entrypoint(version_root: &std::path::Path) -> Result<(), Str
     Ok(())
 }
 
-fn init_package(selector: &str, target: Option<&str>) {
+/// Scaffolds every MCP declared by the project containing the working directory into the project root.
+fn init_project() {
+    let (root, manifest) = current_project();
+    let lock_path = root.join(".mcpctl.lock");
+    let lock = std::fs::read_to_string(&lock_path).ok().map(|contents| {
+        mcp_cli::project_lock::parse_project_lock(&contents)
+            .unwrap_or_else(|error| fatal(format!("{} is malformed: {error}", lock_path.display())))
+    });
+    for declared in &manifest.mcp {
+        let version = lock.iter().flat_map(|lock| &lock.mcp).find(|locked| locked.name == declared.name).map(|locked| &locked.version)
+            .unwrap_or_else(|| fatal(format!("mcp '{}' is not locked; run `mcpctl sync` first", declared.name)));
+        init_package(&format!("{}@{version}", declared.name), Some(&root));
+    }
+}
+
+fn init_package(selector: &str, target: Option<&std::path::Path>) {
     let (name, requested_version) = selector.split_once('@').map_or((selector, None), |(name, version)| (name, Some(version)));
     let state_home = mcp_cli::paths::data_home_from(std::env::var_os("MCPCTL_HOME").map(std::path::PathBuf::from)).unwrap_or_else(|error| fatal(error));
     let registry = mcp_cli::registry::load_registry(&state_home.join("registry.json")).unwrap_or_else(|error| fatal(format!("cannot read registry: {error}")));
@@ -97,7 +119,7 @@ fn init_package(selector: &str, target: Option<&str>) {
         .and_then(|contents| mcp_cli::manifest::parse_manifest(&contents))
         .unwrap_or_else(|error| fatal(format!("cannot read installed manifest: {error}")));
     let scaffold = manifest.scaffold.unwrap_or_else(|| fatal(format!("{name}@{version} does not ship a scaffold")));
-    let target = target.map(std::path::PathBuf::from).unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|error| fatal(error.to_string())));
+    let target = target.map(std::path::Path::to_path_buf).unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|error| fatal(error.to_string())));
     // `exclude` filters the `dirs` copies only; a file named in `files` is always copied.
     for file in &scaffold.files {
         let destination = target.join(&file.to);
