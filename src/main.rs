@@ -55,6 +55,16 @@ fn catalog_add(path: &str) {
     let manifest = catalog_source_manifest(&source).unwrap_or_else(|error| fatal(format!("cannot add {path} to the catalog: {error}")));
     let catalog_path = config_home().join("catalog.toml");
     let mut catalog = read_catalog(&catalog_path);
+    if catalog.mcp.iter().any(|entry| std::path::Path::new(&entry.source) == source) {
+        println!("{} is already in the catalog", manifest.name);
+        return;
+    }
+    // Entries whose source is currently unusable cannot be identified, so they never block an add.
+    if let Some(existing) = catalog.mcp.iter().find(|entry| {
+        catalog_source_manifest(std::path::Path::new(&entry.source)).is_ok_and(|existing| existing.name == manifest.name)
+    }) {
+        fatal(format!("{} is already in the catalog from {}; cannot also add {}", manifest.name, existing.source, source.display()));
+    }
     catalog.mcp.push(mcp_cli::catalog::CatalogEntry { source: source.display().to_string() });
     std::fs::create_dir_all(catalog_path.parent().expect("catalog.toml has a parent"))
         .and_then(|()| std::fs::write(&catalog_path, mcp_cli::catalog::render_catalog(&catalog)))

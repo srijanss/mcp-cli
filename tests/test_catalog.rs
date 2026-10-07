@@ -114,3 +114,42 @@ fn catalog_add_fails_naming_a_source_that_is_missing_or_not_a_valid_package_and_
         assert_eq!(fs::read_to_string(workspace.join("config/catalog.toml")).unwrap(), catalog_before);
     }
 }
+
+#[test]
+fn catalog_add_of_a_source_already_in_the_catalog_changes_nothing() {
+    let workspace = temporary_dir();
+    let source = write_package(&workspace, "project-mcp", "project-mcp", "0.4.3");
+    assert!(mcpctl(&workspace, &workspace, &["catalog", "add", "project-mcp"]).status.success());
+
+    let output = mcpctl(&workspace, &workspace.join("project-mcp"), &["catalog", "add", "."]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output), "project-mcp is already in the catalog\n");
+    assert_eq!(
+        fs::read_to_string(workspace.join("config/catalog.toml")).unwrap(),
+        format!("[[mcp]]\nsource = {:?}\n", source.display().to_string())
+    );
+}
+
+#[test]
+fn catalog_add_fails_naming_both_sources_when_another_source_already_provides_the_name() {
+    let workspace = temporary_dir();
+    let original = write_package(&workspace, "project-mcp", "project-mcp", "0.4.3");
+    let fork = write_package(&workspace, "project-mcp-fork", "project-mcp", "0.5.0");
+    assert!(mcpctl(&workspace, &workspace, &["catalog", "add", "project-mcp"]).status.success());
+    let catalog_before = fs::read_to_string(workspace.join("config/catalog.toml")).unwrap();
+
+    let output = mcpctl(&workspace, &workspace, &["catalog", "add", "project-mcp-fork"]);
+
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains(&format!(
+            "project-mcp is already in the catalog from {}; cannot also add {}",
+            original.display(),
+            fork.display()
+        )),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert_eq!(fs::read_to_string(workspace.join("config/catalog.toml")).unwrap(), catalog_before);
+}
