@@ -35,7 +35,42 @@ fn sync_project() {
         if !state_home.join("packages").join(&locked.name).join(&locked.version).exists() {
             install_package(&root.join(&locked.source).to_string_lossy());
         }
+        let version_root = state_home.join("packages").join(&locked.name).join(&locked.version);
+        verify_installed_entrypoint(&version_root)
+            .unwrap_or_else(|error| fatal(format!("{}@{} is installed but broken: {error}", locked.name, locked.version)));
     }
+}
+
+/// The runtime `bin` directory and entrypoint `run` launches for an installed version.
+fn installed_entrypoint(version_root: &std::path::Path) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+    let manifest = std::fs::read_to_string(version_root.join("source/mcpctl.toml"))
+        .map_err(|error| error.to_string())
+        .and_then(|contents| mcp_cli::manifest::parse_manifest(&contents))
+        .map_err(|error| format!("cannot read installed manifest: {error}"))?;
+    let runtime_bin = match manifest.runtime {
+        mcp_cli::manifest::Runtime::Python { .. } => version_root.join("runtime/.venv/bin"),
+        mcp_cli::manifest::Runtime::Binary => version_root.join("runtime/bin"),
+    };
+    // `metadata.json` is authoritative; the manifest copy only covers installs that predate it.
+    let entrypoint = std::fs::read_to_string(version_root.join("metadata.json")).ok()
+        .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())
+        .and_then(|metadata| metadata["entrypoint_relative_path"].as_str().map(str::to_owned))
+        .unwrap_or(manifest.install.entrypoint);
+    let entrypoint = runtime_bin.join(entrypoint);
+    Ok((runtime_bin, entrypoint))
+}
+
+/// Checks that the entrypoint `run` would launch for this installed version is an executable file.
+fn verify_installed_entrypoint(version_root: &std::path::Path) -> Result<(), String> {
+    let (_, entrypoint) = installed_entrypoint(version_root)?;
+    if !entrypoint.is_file() {
+        return Err(format!("entrypoint {} is missing", entrypoint.display()));
+    }
+    #[cfg(unix)]
+    if std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&entrypoint).map_err(|error| error.to_string())?.permissions()) & 0o111 == 0 {
+        return Err(format!("entrypoint {} is not executable", entrypoint.display()));
+    }
+    Ok(())
 }
 
 fn init_package(selector: &str, target: Option<&str>) {
@@ -425,24 +460,12 @@ fn run_package(package: &str, arguments: &[String]) {
         }
     }
     let install_root = state_home.join("packages").join(name).join(&version);
-    let manifest = std::fs::read_to_string(install_root.join("source/mcpctl.toml"))
-        .map_err(|error| error.to_string())
-        .and_then(|contents| mcp_cli::manifest::parse_manifest(&contents))
-        .unwrap_or_else(|error| fatal(format!("cannot read installed manifest: {error}")));
-    let runtime_bin = match manifest.runtime {
-        mcp_cli::manifest::Runtime::Python { .. } => install_root.join("runtime/.venv/bin"),
-        mcp_cli::manifest::Runtime::Binary => install_root.join("runtime/bin"),
-    };
-    let mut path_entries = vec![runtime_bin.clone()];
+    let (runtime_bin, entrypoint) = installed_entrypoint(&install_root).unwrap_or_else(|error| fatal(error));
+    let mut path_entries = vec![runtime_bin];
     if let Some(path) = std::env::var_os("PATH") {
         path_entries.extend(std::env::split_paths(&path));
     }
-    // `metadata.json` is authoritative; the manifest copy only covers installs that predate it.
-    let entrypoint = std::fs::read_to_string(install_root.join("metadata.json")).ok()
-        .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok())
-        .and_then(|metadata| metadata["entrypoint_relative_path"].as_str().map(str::to_owned))
-        .unwrap_or(manifest.install.entrypoint);
-    let mut command = std::process::Command::new(runtime_bin.join(entrypoint));
+    let mut command = std::process::Command::new(entrypoint);
     command.args(arguments).env("PATH", std::env::join_paths(path_entries).unwrap()).env_remove("VIRTUAL_ENV").env_remove("PYTHONHOME");
     #[cfg(unix)]
     {

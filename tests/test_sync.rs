@@ -120,3 +120,18 @@ fn repeated_sync_reuses_installed_versions_and_projects_share_them() {
     assert_eq!(fs::read_dir(state_home.join("packages/project-mcp")).unwrap().count(), 1);
     assert_eq!(mcpctl(&second_project, &state_home, &["run", "project-mcp"]).stdout, b"project-mcp@0.4.3");
 }
+
+#[test]
+fn sync_fails_naming_a_reused_version_whose_runtime_is_broken() {
+    let (workspace, project) = workspace_with_project();
+    let state_home = workspace.join("state");
+    assert!(mcpctl(&project, &state_home, &["sync"]).status.success());
+    fs::remove_file(state_home.join("packages/project-mcp/0.4.3/runtime/bin/bin/project-mcp")).unwrap();
+
+    let output = mcpctl(&project, &state_home, &["sync"]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("project-mcp@0.4.3"), "{stderr}");
+    assert!(stderr.contains("entrypoint"), "{stderr}");
+}
