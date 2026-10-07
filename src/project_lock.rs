@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const LOCK_VERSION: u32 = 1;
 
@@ -9,7 +9,7 @@ pub struct ProjectLock {
     pub mcp: Vec<LockedMcp>,
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
 pub struct LockedMcp {
     pub name: String,
     pub version: String,
@@ -28,4 +28,17 @@ pub fn parse_project_lock(contents: &str) -> Result<ProjectLock, String> {
         })?;
     }
     Ok(lock)
+}
+
+#[derive(Serialize)]
+struct SortedLock<'a> {
+    version: u32,
+    mcp: Vec<&'a LockedMcp>,
+}
+
+/// Renders the lock with entries sorted by name, so equal locks always produce identical text.
+pub fn render_project_lock(lock: &ProjectLock) -> String {
+    let mut mcp: Vec<&LockedMcp> = lock.mcp.iter().collect();
+    mcp.sort_by(|left, right| left.name.cmp(&right.name));
+    toml::to_string(&SortedLock { version: lock.version, mcp }).expect("lock entries are plain strings")
 }
