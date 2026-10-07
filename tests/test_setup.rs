@@ -141,3 +141,52 @@ fn setup_fails_naming_each_mcp_whose_scaffold_cannot_be_applied() {
     assert!(stderr(&output).contains("setup failed for design-advisor-mcp, project-mcp"), "stderr: {}", stderr(&output));
     assert!(!stdout(&output).contains("Project MCP environment ready."), "stdout: {}", stdout(&output));
 }
+
+#[test]
+fn setup_mcp_selects_only_the_named_catalog_mcps() {
+    let (workspace, project, project_mcp, _) = workspace_with_catalog();
+
+    let output = mcpctl(&workspace, &project, &["setup", "--mcp", "project-mcp"]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert!(stdout(&output).starts_with("Selected MCPs\n  project-mcp\nCreating .mcpctl.toml\n"), "stdout: {}", stdout(&output));
+    assert_eq!(
+        fs::read_to_string(project.join(".mcpctl.toml")).unwrap(),
+        format!(
+            "[project]\nname = \"checkout-service\"\n\n[[mcp]]\nname = \"project-mcp\"\nversion = \"^0.4.3\"\nsource = {:?}\n",
+            project_mcp.display().to_string()
+        )
+    );
+    assert!(!project.join("docs/design-advisor-mcp.md").exists());
+}
+
+#[test]
+fn setup_mcp_of_a_name_not_in_the_catalog_fails_listing_the_available_names_and_writes_nothing() {
+    let (workspace, project, _, _) = workspace_with_catalog();
+
+    let output = mcpctl(&workspace, &project, &["setup", "--mcp", "project-mcp", "--mcp", "missing-mcp"]);
+
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("missing-mcp is not an available catalog MCP; available: design-advisor-mcp, project-mcp"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert_eq!(stdout(&output), "");
+    assert_eq!(fs::read_dir(&project).unwrap().count(), 0);
+}
+
+#[test]
+fn setup_without_a_selection_off_a_terminal_fails_suggesting_all_or_mcp() {
+    let (workspace, project, _, _) = workspace_with_catalog();
+
+    let output = mcpctl(&workspace, &project, &["setup"]);
+
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("setup needs a terminal to pick MCPs; pass --all or --mcp <name>"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert_eq!(fs::read_dir(&project).unwrap().count(), 0);
+}

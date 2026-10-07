@@ -14,7 +14,7 @@ fn main() {
         Command::Init { package: Some(package), target } => init_package(&package, target.as_deref().map(std::path::Path::new)),
         Command::Init { package: None, .. } => init_project(),
         Command::Sync { locked } => sync_project(locked),
-        Command::Setup { .. } => setup_project(),
+        Command::Setup { all, mcps } => setup_project(all, &mcps),
         Command::Catalog { command: CatalogCommand::Add { path } } => catalog_add(&path),
         Command::Catalog { command: CatalogCommand::List } => catalog_list(),
         Command::Catalog { command: CatalogCommand::Remove { target } } => catalog_remove(&target),
@@ -152,23 +152,32 @@ fn catalog_packages(catalog: &mcp_cli::catalog::Catalog) -> CatalogPackages<'_> 
     packages
 }
 
-/// Declares every available catalog MCP in a new `.mcpctl.toml` in the working directory, then locks and installs them.
-fn setup_project() {
+/// Declares the selected catalog MCPs (every available one with `all`) in a new `.mcpctl.toml` in the working
+/// directory, then locks, installs and scaffolds them.
+fn setup_project(all: bool, mcps: &[String]) {
+    if !all && mcps.is_empty() {
+        fatal("setup needs a terminal to pick MCPs; pass --all or --mcp <name>".to_owned());
+    }
     let catalog = read_catalog(&config_home().join("catalog.toml"));
     let packages = catalog_packages(&catalog);
     if packages.available.is_empty() {
         fatal("Catalog is empty; add an MCP with: mcpctl catalog add <path>".to_owned());
     }
+    if let Some(unknown) = mcps.iter().find(|name| !packages.available.iter().any(|(package, _)| &package.name == *name)) {
+        let available: Vec<_> = packages.available.iter().map(|(package, _)| package.name.as_str()).collect();
+        fatal(format!("{unknown} is not an available catalog MCP; available: {}", available.join(", ")));
+    }
+    let selected: Vec<_> = packages.available.iter().filter(|(package, _)| all || mcps.contains(&package.name)).collect();
     let root = std::env::current_dir().unwrap_or_else(|error| fatal(format!("cannot read current directory: {error}")));
     println!("Selected MCPs");
-    for (manifest, _) in &packages.available {
+    for (manifest, _) in &selected {
         println!("  {}", manifest.name);
     }
     println!("Creating .mcpctl.toml");
     let project_name = root.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
     let manifest = mcp_cli::project::ProjectManifest {
         project: mcp_cli::project::ProjectInfo { name: project_name },
-        mcp: packages.available.iter().map(|(package, source)| mcp_cli::project::McpDeclaration {
+        mcp: selected.iter().map(|(package, source)| mcp_cli::project::McpDeclaration {
             name: package.name.clone(),
             version: format!("^{}", package.version),
             source: (*source).to_owned(),

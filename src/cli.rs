@@ -53,6 +53,9 @@ pub enum Command {
         /// Select every available catalog MCP
         #[arg(long)]
         all: bool,
+        /// Select a catalog MCP by name (repeatable)
+        #[arg(long = "mcp", value_name = "name")]
+        mcps: Vec<String>,
     },
     /// Manage the local catalog of MCP sources that setup offers
     Catalog {
