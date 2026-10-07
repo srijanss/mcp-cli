@@ -30,6 +30,18 @@ fn current_project() -> (std::path::PathBuf, mcp_cli::project::ProjectManifest) 
     (root, manifest)
 }
 
+/// The project lock at `lock_path`, or `None` when the project has no lock yet.
+/// A lock that exists but cannot be read or parsed is fatal rather than silently ignored.
+fn read_project_lock(lock_path: &std::path::Path) -> Option<mcp_cli::project_lock::ProjectLock> {
+    let contents = match std::fs::read_to_string(lock_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => fatal(format!("cannot read {}: {error}", lock_path.display())),
+    };
+    Some(mcp_cli::project_lock::parse_project_lock(&contents)
+        .unwrap_or_else(|error| fatal(format!("{} is malformed: {error}", lock_path.display()))))
+}
+
 /// Locks the MCPs declared by the project containing the working directory and installs each locked version.
 fn sync_project(locked: bool) {
     let (root, manifest) = current_project();
@@ -511,11 +523,10 @@ fn list_packages() {
 fn project_locked_version(name: &str) -> Option<(String, std::path::PathBuf)> {
     let root = mcp_cli::project::find_project_root(&std::env::current_dir().ok()?)?;
     let lock_path = root.join(".mcpctl.lock");
-    let contents = std::fs::read_to_string(&lock_path).ok()?;
-    let lock = mcp_cli::project_lock::parse_project_lock(&contents)
-        .unwrap_or_else(|error| fatal(format!("{} is malformed: {error}", lock_path.display())));
+    let lock = read_project_lock(&lock_path)?;
     lock.mcp.into_iter().find(|locked| locked.name == name).map(|locked| (locked.version, lock_path))
 }
+
 
 fn run_package(package: &str, arguments: &[String]) {
     let (name, requested_version) = package.split_once('@').map_or((package, None), |(name, version)| (name, Some(version)));

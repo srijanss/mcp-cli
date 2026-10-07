@@ -118,3 +118,18 @@ fn run_fails_naming_the_lock_file_when_the_project_lock_is_malformed() {
     assert!(output.stdout.is_empty(), "a malformed lock must not fall back to the active version");
     assert!(stderr.contains(&project.join(".mcpctl.lock").display().to_string()), "{stderr}");
 }
+
+#[test]
+fn run_fails_naming_the_lock_file_when_the_project_lock_cannot_be_read() {
+    let state_home = state_with_three_versions();
+    let project = project_pinning("example-mcp", "2.0.0");
+    fs::remove_file(project.join(".mcpctl.lock")).unwrap();
+    fs::create_dir(project.join(".mcpctl.lock")).unwrap();
+
+    let output = run_in(&project, &state_home, "example-mcp");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty(), "an unreadable lock must not fall back to the active version");
+    assert!(stderr.contains(&format!("cannot read {}", project.join(".mcpctl.lock").display())), "{stderr}");
+}
