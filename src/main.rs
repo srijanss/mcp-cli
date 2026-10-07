@@ -153,10 +153,13 @@ fn catalog_packages(catalog: &mcp_cli::catalog::Catalog) -> CatalogPackages<'_> 
     packages
 }
 
-/// Declares the selected catalog MCPs (every available one with `all`) in a new `.mcpctl.toml` in the working
-/// directory, then locks, installs and scaffolds them.
+/// Declares the selected catalog MCPs (every available one with `all`, or those ticked in the terminal picker
+/// when neither `all` nor `mcps` is given) in the project's `.mcpctl.toml`, then locks, installs and scaffolds
+/// them.
 fn setup_project(all: bool, mcps: &[String]) {
-    if !all && mcps.is_empty() {
+    use std::io::IsTerminal;
+    let pick = !all && mcps.is_empty();
+    if pick && !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
         fatal("setup needs a terminal to pick MCPs; pass --all or --mcp <name>".to_owned());
     }
     let catalog = read_catalog(&config_home().join("catalog.toml"));
@@ -174,9 +177,11 @@ fn setup_project(all: bool, mcps: &[String]) {
     for duplicate in &packages.duplicates {
         println!("WARNING: {duplicate}");
     }
-    let selected: Vec<_> = packages.available.iter().filter(|(package, _)| all || mcps.contains(&package.name)).collect();
     let directory = std::env::current_dir().unwrap_or_else(|error| fatal(format!("cannot read current directory: {error}")));
     let root = mcp_cli::project::find_project_root(&directory).unwrap_or(directory);
+    let picked = if pick { pick_mcps(&root, &packages.available) } else { Vec::new() };
+    let mcps = if pick { &picked[..] } else { mcps };
+    let selected: Vec<_> = packages.available.iter().filter(|(package, _)| all || mcps.contains(&package.name)).collect();
     println!("Selected MCPs");
     for (manifest, _) in &selected {
         println!("  {}", manifest.name);
@@ -200,6 +205,81 @@ fn setup_project(all: bool, mcps: &[String]) {
         fatal(format!("setup failed for {}", failed.join(", ")));
     }
     println!("Project MCP environment ready.");
+}
+
+/// Lets the user tick catalog MCPs in the terminal, starting from those the project already declares, and
+/// returns the confirmed names; cancelling exits before anything is written.
+fn pick_mcps(root: &std::path::Path, available: &[(mcp_cli::manifest::PackageManifest, &str)]) -> Vec<String> {
+    let declared: Vec<String> = std::fs::read_to_string(root.join(".mcpctl.toml"))
+        .ok()
+        .and_then(|contents| mcp_cli::project::parse_project_manifest(&contents).ok())
+        .map(|manifest| manifest.mcp.into_iter().map(|declaration| declaration.name).collect())
+        .unwrap_or_default();
+    let names = available.iter().map(|(package, _)| package.name.clone()).collect();
+    let details: Vec<String> = available
+        .iter()
+        .map(|(package, _)| format!("{}  {}", package.version, package.description.as_deref().unwrap_or("")).trim_end().to_owned())
+        .collect();
+    let mut picker = mcp_cli::picker::Picker::new(names, &declared);
+    match run_picker(&mut picker, &details) {
+        Ok(Some(names)) => names,
+        Ok(None) => fatal("setup cancelled; nothing was written".to_owned()),
+        Err(error) => fatal(format!("cannot run the MCP picker: {error}")),
+    }
+}
+
+/// Draws the picker in raw mode and feeds it key presses until it is confirmed (`Some` of the names) or
+/// cancelled (`None`), restoring the terminal either way.
+fn run_picker(picker: &mut mcp_cli::picker::Picker, details: &[String]) -> std::io::Result<Option<Vec<String>>> {
+    use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+    use crossterm::{cursor, terminal};
+    use mcp_cli::picker::{PickerKey, PickerOutcome};
+
+    let mut stdout = std::io::stdout();
+    terminal::enable_raw_mode()?;
+    crossterm::execute!(stdout, cursor::Hide)?;
+    let mut drawn = 0;
+    let outcome = loop {
+        let columns = terminal::size().map(|(columns, _)| columns).unwrap_or(0);
+        let lines = picker.render(details);
+        if let Err(error) = draw_picker(&mut stdout, &lines, drawn, columns) {
+            break Err(error);
+        }
+        drawn = lines.len() as u16;
+        let key = match crossterm::event::read() {
+            Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => key,
+            Ok(_) => continue,
+            Err(error) => break Err(error),
+        };
+        let interrupted = key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+        let Some(key) = (if interrupted { Some(PickerKey::Cancel) } else { PickerKey::from_key_code(key.code) }) else {
+            continue;
+        };
+        match picker.handle(key) {
+            PickerOutcome::Pending => {}
+            PickerOutcome::Confirmed(names) => break Ok(Some(names)),
+            PickerOutcome::Cancelled => break Ok(None),
+        }
+    };
+    terminal::disable_raw_mode()?;
+    crossterm::execute!(stdout, cursor::Show)?;
+    outcome
+}
+
+/// Redraws the picker over the `drawn` lines of its previous frame, cutting each line to the terminal's `columns`
+/// so none wraps.
+fn draw_picker(stdout: &mut std::io::Stdout, lines: &[String], drawn: u16, columns: u16) -> std::io::Result<()> {
+    use crossterm::{cursor, terminal};
+    use std::io::Write;
+
+    if drawn > 0 {
+        crossterm::queue!(stdout, cursor::MoveToPreviousLine(drawn))?;
+    }
+    for line in lines {
+        crossterm::queue!(stdout, terminal::Clear(terminal::ClearType::CurrentLine))?;
+        write!(stdout, "{}\r\n", mcp_cli::picker::fit_to_width(line, columns))?;
+    }
+    stdout.flush()
 }
 
 /// Writes the `.mcpctl.toml` setup leaves at `root` for the `selected` catalog MCPs and returns what it declares:
