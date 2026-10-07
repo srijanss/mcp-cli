@@ -207,3 +207,24 @@ fn project_manifest_without_any_mcp_entries_parses_as_declaring_none() {
     assert_eq!(manifest.project.name, "empty-service");
     assert!(manifest.mcp.is_empty());
 }
+
+#[test]
+fn project_manifest_renders_the_project_table_then_one_mcp_table_per_declaration_and_parses_back() {
+    let manifest = mcp_cli::project::ProjectManifest {
+        project: mcp_cli::project::ProjectInfo { name: "checkout-service".to_owned() },
+        mcp: vec![
+            McpDeclaration { name: "design-advisor-mcp".to_owned(), version: "^0.2.0".to_owned(), source: "/code/design-advisor-mcp".to_owned() },
+            declaration("../project-mcp"),
+        ],
+    };
+
+    let rendered = mcp_cli::project::render_project_manifest(&manifest);
+
+    assert_eq!(
+        rendered,
+        "[project]\nname = \"checkout-service\"\n\n\
+         [[mcp]]\nname = \"design-advisor-mcp\"\nversion = \"^0.2.0\"\nsource = \"/code/design-advisor-mcp\"\n\n\
+         [[mcp]]\nname = \"project-mcp\"\nversion = \"^0.4\"\nsource = \"../project-mcp\"\n"
+    );
+    assert_eq!(parse_project_manifest(&rendered).unwrap(), manifest);
+}

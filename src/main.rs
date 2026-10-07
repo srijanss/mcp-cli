@@ -14,6 +14,7 @@ fn main() {
         Command::Init { package: Some(package), target } => init_package(&package, target.as_deref().map(std::path::Path::new)),
         Command::Init { package: None, .. } => init_project(),
         Command::Sync { locked } => sync_project(locked),
+        Command::Setup { .. } => setup_project(),
         Command::Catalog { command: CatalogCommand::Add { path } } => catalog_add(&path),
         Command::Catalog { command: CatalogCommand::List } => catalog_list(),
         Command::Catalog { command: CatalogCommand::Remove { target } } => catalog_remove(&target),
@@ -151,6 +152,39 @@ fn catalog_packages(catalog: &mcp_cli::catalog::Catalog) -> CatalogPackages<'_> 
     packages
 }
 
+/// Declares every available catalog MCP in a new `.mcpctl.toml` in the working directory, then locks and installs them.
+fn setup_project() {
+    let catalog = read_catalog(&config_home().join("catalog.toml"));
+    let packages = catalog_packages(&catalog);
+    if packages.available.is_empty() {
+        fatal("Catalog is empty; add an MCP with: mcpctl catalog add <path>".to_owned());
+    }
+    let root = std::env::current_dir().unwrap_or_else(|error| fatal(format!("cannot read current directory: {error}")));
+    println!("Selected MCPs");
+    for (manifest, _) in &packages.available {
+        println!("  {}", manifest.name);
+    }
+    println!("Creating .mcpctl.toml");
+    let project_name = root.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let manifest = mcp_cli::project::ProjectManifest {
+        project: mcp_cli::project::ProjectInfo { name: project_name },
+        mcp: packages.available.iter().map(|(package, source)| mcp_cli::project::McpDeclaration {
+            name: package.name.clone(),
+            version: format!("^{}", package.version),
+            source: (*source).to_owned(),
+        }).collect(),
+    };
+    let manifest_path = root.join(".mcpctl.toml");
+    std::fs::write(&manifest_path, mcp_cli::project::render_project_manifest(&manifest))
+        .unwrap_or_else(|error| fatal(format!("cannot write {}: {error}", manifest_path.display())));
+    println!("Resolving versions");
+    let lock = mcp_cli::project_lock::resolve_project_lock(&manifest, &root).unwrap_or_else(|error| fatal(error));
+    println!("Installing required MCPs");
+    install_locked_mcps(&root, &lock);
+    println!("Creating .mcpctl.lock");
+    mcp_cli::project_lock::write_project_lock(&root, &lock).unwrap_or_else(|error| fatal(error));
+}
+
 /// The root and parsed `.mcpctl.toml` of the project containing the working directory; fatal outside a project.
 fn current_project() -> (std::path::PathBuf, mcp_cli::project::ProjectManifest) {
     let directory = std::env::current_dir().unwrap_or_else(|error| fatal(format!("cannot read current directory: {error}")));
@@ -190,6 +224,11 @@ fn sync_project(locked: bool) {
     } else {
         mcp_cli::project_lock::write_project_lock(&root, &lock).unwrap_or_else(|error| fatal(error));
     }
+    install_locked_mcps(&root, &lock);
+}
+
+/// Installs each locked version the shared store does not already hold, then checks every one can be launched.
+fn install_locked_mcps(root: &std::path::Path, lock: &mcp_cli::project_lock::ProjectLock) {
     let state_home = mcp_cli::paths::data_home_from(std::env::var_os("MCPCTL_HOME").map(std::path::PathBuf::from))
         .unwrap_or_else(|error| fatal(error));
     for locked in &lock.mcp {

@@ -48,6 +48,12 @@ pub enum Command {
         #[arg(long)]
         locked: bool,
     },
+    /// Choose MCPs from the catalog for the current project, then lock and install them
+    Setup {
+        /// Select every available catalog MCP
+        #[arg(long)]
+        all: bool,
+    },
     /// Manage the local catalog of MCP sources that setup offers
     Catalog {
         #[command(subcommand)]

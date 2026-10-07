@@ -1,21 +1,21 @@
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// A project's `.mcpctl.toml`: which MCPs the project uses and at what versions.
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
 pub struct ProjectManifest {
     pub project: ProjectInfo,
     #[serde(default)]
     pub mcp: Vec<McpDeclaration>,
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
 pub struct ProjectInfo {
     pub name: String,
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
 pub struct McpDeclaration {
     pub name: String,
     pub version: String,
@@ -52,6 +52,10 @@ pub fn parse_project_manifest(contents: &str) -> Result<ProjectManifest, String>
         })?;
     }
     Ok(manifest)
+}
+
+pub fn render_project_manifest(manifest: &ProjectManifest) -> String {
+    toml::to_string(manifest).expect("project manifest fields are plain strings")
 }
 
 /// Walks up from `start` to the nearest directory holding `.mcpctl.toml`, stopping at the filesystem root.
