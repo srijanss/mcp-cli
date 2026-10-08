@@ -228,3 +228,29 @@ fn project_manifest_renders_the_project_table_then_one_mcp_table_per_declaration
     );
     assert_eq!(parse_project_manifest(&rendered).unwrap(), manifest);
 }
+
+#[test]
+fn project_manifest_edit_adds_mcp_tables_in_place_of_an_empty_inline_mcp_array_keeping_comments() {
+    let written = "# nothing selected yet\nmcp = []\n\n[project]\nname = \"checkout-service\"\n";
+
+    let edited = mcp_cli::project::edit_project_manifest(written, &[declaration("../project-mcp")], &[]).unwrap();
+
+    assert!(edited.contains("# nothing selected yet\n"), "{edited}");
+    assert!(!edited.contains("mcp = []"), "{edited}");
+    assert_eq!(parse_project_manifest(&edited).unwrap().mcp, [declaration("../project-mcp")]);
+}
+
+#[test]
+fn project_manifest_edit_removes_named_mcp_tables_keeping_the_rest_as_written() {
+    let written = "# checkout service MCPs\n[project]\nname = \"checkout-service\"\n\n\
+                   # pinned by hand\n[[mcp]]\nname = \"project-mcp\"\nversion = \"^0.4\"   # keep 0.4\nsource = \"../project-mcp\"\n\n\
+                   [[mcp]]\nname = \"design-advisor-mcp\"\nversion = \"^0.2.0\"\nsource = \"../design-advisor-mcp\"\n";
+
+    let edited = mcp_cli::project::edit_project_manifest(written, &[], &["design-advisor-mcp".to_owned()]).unwrap();
+
+    assert_eq!(
+        edited,
+        "# checkout service MCPs\n[project]\nname = \"checkout-service\"\n\n\
+         # pinned by hand\n[[mcp]]\nname = \"project-mcp\"\nversion = \"^0.4\"   # keep 0.4\nsource = \"../project-mcp\"\n"
+    );
+}

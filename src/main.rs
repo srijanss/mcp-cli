@@ -326,28 +326,18 @@ fn write_setup_manifest(
                 .filter(|declared| !selected.iter().any(|(package, _)| package.name == declared.name))
                 .map(|declared| declared.name.clone())
                 .collect();
-            if !removed.is_empty() {
-                // Removing entries means re-rendering; the kept entries' values are preserved as written.
-                manifest.mcp.retain(|declared| !removed.contains(&declared.name));
-                manifest.mcp.extend(added);
+            // The existing manifest is edited in place, so comments and formatting outside the changed entries survive.
+            if !added.is_empty() || !removed.is_empty() {
                 println!("Updating .mcpctl.toml");
-                write_manifest(mcp_cli::project::render_project_manifest(&manifest));
-                for name in removed {
-                    println!("Removed {name} from .mcpctl.toml (scaffold files left in place)");
-                }
-                return manifest;
+                write_manifest(
+                    mcp_cli::project::edit_project_manifest(&contents, &added, &removed)
+                        .unwrap_or_else(|error| fatal(format!("cannot update {}: {error}", manifest_path.display()))),
+                );
             }
-            // Otherwise the existing manifest is kept as written, with newly selected MCPs appended after it.
-            if !added.is_empty() {
-                println!("Updating .mcpctl.toml");
-                let appended: String = added.iter().map(|declared| format!(
-                    "\n[[mcp]]\nname = {}\nversion = {}\nsource = {}\n",
-                    toml::Value::from(declared.name.as_str()),
-                    toml::Value::from(declared.version.as_str()),
-                    toml::Value::from(declared.source.as_str()),
-                )).collect();
-                write_manifest(contents + &appended);
+            for name in &removed {
+                println!("Removed {name} from .mcpctl.toml (scaffold files left in place)");
             }
+            manifest.mcp.retain(|declared| !removed.contains(&declared.name));
             manifest.mcp.extend(added);
             manifest
         }

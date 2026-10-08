@@ -319,3 +319,35 @@ fn setup_rerun_keeps_project_mcps_the_catalog_does_not_offer() {
     let locked: Vec<_> = lock.mcp.iter().map(|mcp| mcp.name.as_str()).collect();
     assert_eq!(locked, ["local-mcp", "project-mcp"]);
 }
+
+#[test]
+fn setup_rerun_adds_mcps_to_a_manifest_whose_mcp_list_is_an_empty_inline_array() {
+    let (workspace, project, project_mcp, _) = workspace_with_catalog();
+    let written = "# nothing selected yet\nmcp = []\n\n[project]\nname = \"checkout-service\"\n";
+    fs::write(project.join(".mcpctl.toml"), written).unwrap();
+
+    let output = mcpctl(&workspace, &project, &["setup", "--mcp", "project-mcp"]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let contents = fs::read_to_string(project.join(".mcpctl.toml")).unwrap();
+    assert!(contents.contains("# nothing selected yet\n"), "{contents}");
+    let manifest = mcp_cli::project::parse_project_manifest(&contents).unwrap_or_else(|error| panic!("{error}\n{contents}"));
+    let declared: Vec<_> = manifest.mcp.iter().map(|mcp| (mcp.name.as_str(), mcp.version.as_str(), mcp.source.clone())).collect();
+    assert_eq!(declared, [("project-mcp", "^0.4.3", project_mcp.display().to_string())]);
+}
+
+#[test]
+fn setup_rerun_removing_a_deselected_mcp_keeps_the_rest_of_the_manifest_as_written() {
+    let (workspace, project, _, design_advisor) = workspace_with_catalog();
+    let kept = "# hand-written\n[project]\nname = \"custom-name\"\n\n# pinned by hand\n[[mcp]]\nname = \"project-mcp\"\nversion = \"^0.4\"   # keep 0.4\nsource = \"../project-mcp\"\n";
+    let written = format!(
+        "{kept}\n[[mcp]]\nname = \"design-advisor-mcp\"\nversion = \"^0.2.0\"\nsource = {:?}\n",
+        design_advisor.display().to_string()
+    );
+    fs::write(project.join(".mcpctl.toml"), written).unwrap();
+
+    let output = mcpctl(&workspace, &project, &["setup", "--mcp", "project-mcp"]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(fs::read_to_string(project.join(".mcpctl.toml")).unwrap(), kept);
+}
