@@ -12,3 +12,4 @@ sha2 = "0.10"
 toml = { version = "0.8", features = ["preserve_order"] }
 toml_edit = "0.22"
 crossterm = "0.29"
+unicode-width = "0.2"

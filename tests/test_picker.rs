@@ -171,3 +171,17 @@ fn picker_renders_control_characters_in_catalog_text_as_visible_escapes() {
 fn printable_escapes_control_characters_and_keeps_other_text() {
     assert_eq!(mcp_cli::picker::printable("a\u{1b}[2J\tb\u{9b}c é 漢"), "a\\u{1b}[2J\\tb\\u{9b}c é 漢");
 }
+
+#[test]
+fn picker_lines_with_wide_characters_are_cut_to_the_terminal_width_in_screen_columns() {
+    use mcp_cli::picker::fit_to_width;
+
+    // Each of 漢字 takes two columns, so a 5-column terminal (4 usable) fits "a漢" and drops 字, which would straddle the edge.
+    assert_eq!(fit_to_width("a漢字b", 5), "a漢");
+    assert_eq!(fit_to_width("a漢字b", 6), "a漢字");
+}
+
+#[test]
+fn fit_to_width_keeps_zero_width_combining_marks_with_their_base_character() {
+    assert_eq!(mcp_cli::picker::fit_to_width("e\u{301}xy", 2), "e\u{301}");
+}

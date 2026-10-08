@@ -88,13 +88,26 @@ impl Picker {
     }
 }
 
-/// `line` cut to fit a terminal `columns` wide without wrapping, leaving the last column free; a width of 0
-/// means the terminal did not report one, so the line is left whole.
+/// `line` cut to fit a terminal `columns` wide without wrapping, leaving the last column free. Width is counted
+/// in screen columns, so wide characters count twice and zero-width marks stay with their base character; a
+/// wide character that would straddle the edge is dropped. A width of 0 means the terminal did not report
+/// one, so the line is left whole.
 pub fn fit_to_width(line: &str, columns: u16) -> String {
-    match columns {
-        0 => line.to_owned(),
-        columns => line.chars().take(usize::from(columns) - 1).collect(),
+    use unicode_width::UnicodeWidthChar;
+    if columns == 0 {
+        return line.to_owned();
     }
+    let mut room = usize::from(columns) - 1;
+    let mut fitted = String::new();
+    for character in line.chars() {
+        let width = character.width().unwrap_or(0);
+        if width > room {
+            break;
+        }
+        room -= width;
+        fitted.push(character);
+    }
+    fitted
 }
 
 /// The terminal mode changes the picker makes, so they can be undone even when one of them fails.
