@@ -255,8 +255,8 @@ fn run_picker(picker: &mut mcp_cli::picker::Picker, details: &[String]) -> std::
     mcp_cli::picker::with_terminal(&mut Crossterm(std::io::stdout()), |Crossterm(stdout)| {
         let mut drawn = 0;
         loop {
-            let columns = terminal::size().map(|(columns, _)| columns).unwrap_or(0);
-            let lines = picker.render(details);
+            let (columns, rows) = terminal::size().unwrap_or((0, 0));
+            let lines = picker.render(details, rows);
             draw_picker(stdout, &lines, drawn, columns)?;
             drawn = lines.len() as u16;
             let key = match crossterm::event::read()? {

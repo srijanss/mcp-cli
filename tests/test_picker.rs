@@ -56,7 +56,7 @@ fn picker_renders_a_marked_line_per_mcp_with_the_cursor_and_a_key_help_line() {
     let details = names(&["1.0.0  Design advice", "0.2.0  Project context"]);
 
     assert_eq!(
-        picker.render(&details),
+        picker.render(&details, 0),
         names(&[
             "Select MCPs for this project",
             "  [ ] design-advisor-mcp  1.0.0  Design advice",
@@ -162,7 +162,7 @@ fn picker_terminal_shows_the_cursor_even_when_disabling_raw_mode_fails() {
 fn picker_renders_control_characters_in_catalog_text_as_visible_escapes() {
     let picker = Picker::new(names(&["evil\u{7}-mcp"]), &[]);
 
-    let lines = picker.render(&names(&["1.0.0  \u{1b}[2J\u{1b}[HFAKE"]));
+    let lines = picker.render(&names(&["1.0.0  \u{1b}[2J\u{1b}[HFAKE"]), 0);
 
     assert_eq!(lines[1], "> [ ] evil\\u{7}-mcp  1.0.0  \\u{1b}[2J\\u{1b}[HFAKE");
 }
@@ -184,4 +184,45 @@ fn picker_lines_with_wide_characters_are_cut_to_the_terminal_width_in_screen_col
 #[test]
 fn fit_to_width_keeps_zero_width_combining_marks_with_their_base_character() {
     assert_eq!(mcp_cli::picker::fit_to_width("e\u{301}xy", 2), "e\u{301}");
+}
+
+fn thirty_mcps() -> (Picker, Vec<String>) {
+    let names: Vec<String> = (0..30).map(|index| format!("mcp-{index:02}")).collect();
+    let details = vec!["d".to_owned(); names.len()];
+    (Picker::new(names, &[]), details)
+}
+
+#[test]
+fn picker_shows_a_window_of_mcps_around_the_cursor_when_they_do_not_fit_the_terminal_rows() {
+    let (mut picker, details) = thirty_mcps();
+    for _ in 0..15 {
+        picker.handle(PickerKey::Down);
+    }
+
+    assert_eq!(
+        picker.render(&details, 10),
+        names(&[
+            "Select MCPs for this project",
+            "  ^ 13 more",
+            "  [ ] mcp-13  d",
+            "  [ ] mcp-14  d",
+            "> [ ] mcp-15  d",
+            "  [ ] mcp-16  d",
+            "  v 13 more",
+            "",
+            "up/down move  space toggle  a all  n none  enter confirm  esc/q cancel",
+        ])
+    );
+}
+
+#[test]
+fn picker_window_stops_at_the_last_mcp_with_nothing_more_below() {
+    let (mut picker, details) = thirty_mcps();
+    for _ in 0..29 {
+        picker.handle(PickerKey::Down);
+    }
+
+    let lines = picker.render(&details, 10);
+
+    assert_eq!(lines[1..7], names(&["  ^ 26 more", "  [ ] mcp-26  d", "  [ ] mcp-27  d", "  [ ] mcp-28  d", "> [ ] mcp-29  d", ""]));
 }

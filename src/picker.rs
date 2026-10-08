@@ -58,13 +58,31 @@ impl Picker {
     }
 
     /// The picker's screen: a heading, one `[x]`/`[ ]` line per MCP followed by its `details`, the
-    /// cursor marked with `>`, and a key help line.
-    pub fn render(&self, details: &[String]) -> Vec<String> {
+    /// cursor marked with `>`, and a key help line. When the MCPs do not fit a terminal `rows` high, only a
+    /// window of them around the cursor is shown, between lines counting the MCPs hidden above and below; the
+    /// frame stays a line short of `rows` so drawing it never scrolls the terminal. A `rows` of 0 means the
+    /// terminal did not report one, so every MCP is shown.
+    pub fn render(&self, details: &[String], rows: u16) -> Vec<String> {
+        // The heading, the blank line and the key help line.
+        const CHROME: usize = 3;
+        let room = usize::from(rows).saturating_sub(1 + CHROME);
+        let scrolls = rows != 0 && self.names.len() > room;
+        let visible = if scrolls { room.saturating_sub(2).max(1) } else { self.names.len() };
+        let start = self.cursor.saturating_sub(visible / 2).min(self.names.len() - visible);
+        let end = start + visible;
+
         let mut lines = vec!["Select MCPs for this project".to_owned()];
-        for (index, (name, detail)) in self.names.iter().zip(details).enumerate() {
+        if scrolls {
+            lines.push(if start > 0 { format!("  ^ {start} more") } else { String::new() });
+        }
+        for (index, (name, detail)) in self.names.iter().zip(details).enumerate().take(end).skip(start) {
             let cursor = if index == self.cursor { '>' } else { ' ' };
             let mark = if self.selected[index] { 'x' } else { ' ' };
             lines.push(format!("{cursor} [{mark}] {}  {}", printable(name), printable(detail)));
+        }
+        if scrolls {
+            let below = self.names.len() - end;
+            lines.push(if below > 0 { format!("  v {below} more") } else { String::new() });
         }
         lines.push(String::new());
         lines.push("up/down move  space toggle  a all  n none  enter confirm  esc/q cancel".to_owned());
