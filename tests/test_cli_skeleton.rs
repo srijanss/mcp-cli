@@ -10,6 +10,6 @@ fn binary_supports_version_flag() {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8(output.stdout).expect("version output should be UTF-8"),
-        "mcpctl 0.1.0\n"
+        format!("mcpctl {}\n", env!("CARGO_PKG_VERSION"))
     );
 }
