@@ -96,3 +96,24 @@ pub fn fit_to_width(line: &str, columns: u16) -> String {
         columns => line.chars().take(usize::from(columns) - 1).collect(),
     }
 }
+
+/// The terminal mode changes the picker makes, so they can be undone even when one of them fails.
+pub trait Terminal {
+    fn enable_raw_mode(&mut self) -> std::io::Result<()>;
+    fn disable_raw_mode(&mut self) -> std::io::Result<()>;
+    fn hide_cursor(&mut self) -> std::io::Result<()>;
+    fn show_cursor(&mut self) -> std::io::Result<()>;
+}
+
+/// Runs `body` with `terminal` in raw mode and its cursor hidden, then restores both whatever happened. Every
+/// restore step runs even if an earlier one fails; the first error (setup, `body`, then restore) is returned.
+pub fn with_terminal<T: Terminal, R>(terminal: &mut T, body: impl FnOnce(&mut T) -> std::io::Result<R>) -> std::io::Result<R> {
+    terminal.enable_raw_mode()?;
+    let result = terminal.hide_cursor().and_then(|()| body(terminal));
+    let disabled = terminal.disable_raw_mode();
+    let shown = terminal.show_cursor();
+    let value = result?;
+    disabled?;
+    shown?;
+    Ok(value)
+}

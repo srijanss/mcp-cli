@@ -102,3 +102,58 @@ fn picker_lines_are_cut_to_the_terminal_width_unless_it_is_unknown() {
     assert_eq!(fit_to_width("> [x] project-mcp", 80), "> [x] project-mcp");
     assert_eq!(fit_to_width("> [x] project-mcp", 0), "> [x] project-mcp");
 }
+
+/// A terminal that records each mode change and fails the steps named in `failing`.
+#[derive(Default)]
+struct FakeTerminal {
+    calls: Vec<&'static str>,
+    failing: Vec<&'static str>,
+}
+
+impl FakeTerminal {
+    fn step(&mut self, name: &'static str) -> std::io::Result<()> {
+        self.calls.push(name);
+        if self.failing.contains(&name) {
+            return Err(std::io::Error::other(format!("{name} failed")));
+        }
+        Ok(())
+    }
+}
+
+impl mcp_cli::picker::Terminal for FakeTerminal {
+    fn enable_raw_mode(&mut self) -> std::io::Result<()> {
+        self.step("enable raw mode")
+    }
+    fn disable_raw_mode(&mut self) -> std::io::Result<()> {
+        self.step("disable raw mode")
+    }
+    fn hide_cursor(&mut self) -> std::io::Result<()> {
+        self.step("hide cursor")
+    }
+    fn show_cursor(&mut self) -> std::io::Result<()> {
+        self.step("show cursor")
+    }
+}
+
+#[test]
+fn picker_terminal_is_restored_when_hiding_the_cursor_fails() {
+    let mut terminal = FakeTerminal { failing: vec!["hide cursor"], ..FakeTerminal::default() };
+
+    let result = mcp_cli::picker::with_terminal(&mut terminal, |_| -> std::io::Result<()> { panic!("the picker must not run") });
+
+    assert_eq!(result.unwrap_err().to_string(), "hide cursor failed");
+    assert_eq!(terminal.calls, ["enable raw mode", "hide cursor", "disable raw mode", "show cursor"]);
+}
+
+#[test]
+fn picker_terminal_shows_the_cursor_even_when_disabling_raw_mode_fails() {
+    let mut terminal = FakeTerminal { failing: vec!["disable raw mode"], ..FakeTerminal::default() };
+
+    let result = mcp_cli::picker::with_terminal(&mut terminal, |terminal| {
+        terminal.calls.push("picker");
+        Ok("picked")
+    });
+
+    assert_eq!(result.unwrap_err().to_string(), "disable raw mode failed");
+    assert_eq!(terminal.calls, ["enable raw mode", "hide cursor", "picker", "disable raw mode", "show cursor"]);
+}

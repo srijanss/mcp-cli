@@ -235,35 +235,44 @@ fn run_picker(picker: &mut mcp_cli::picker::Picker, details: &[String]) -> std::
     use crossterm::{cursor, terminal};
     use mcp_cli::picker::{PickerKey, PickerOutcome};
 
-    let mut stdout = std::io::stdout();
-    terminal::enable_raw_mode()?;
-    crossterm::execute!(stdout, cursor::Hide)?;
-    let mut drawn = 0;
-    let outcome = loop {
-        let columns = terminal::size().map(|(columns, _)| columns).unwrap_or(0);
-        let lines = picker.render(details);
-        if let Err(error) = draw_picker(&mut stdout, &lines, drawn, columns) {
-            break Err(error);
+    struct Crossterm(std::io::Stdout);
+    impl mcp_cli::picker::Terminal for Crossterm {
+        fn enable_raw_mode(&mut self) -> std::io::Result<()> {
+            terminal::enable_raw_mode()
         }
-        drawn = lines.len() as u16;
-        let key = match crossterm::event::read() {
-            Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => key,
-            Ok(_) => continue,
-            Err(error) => break Err(error),
-        };
-        let interrupted = key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
-        let Some(key) = (if interrupted { Some(PickerKey::Cancel) } else { PickerKey::from_key_code(key.code) }) else {
-            continue;
-        };
-        match picker.handle(key) {
-            PickerOutcome::Pending => {}
-            PickerOutcome::Confirmed(names) => break Ok(Some(names)),
-            PickerOutcome::Cancelled => break Ok(None),
+        fn disable_raw_mode(&mut self) -> std::io::Result<()> {
+            terminal::disable_raw_mode()
         }
-    };
-    terminal::disable_raw_mode()?;
-    crossterm::execute!(stdout, cursor::Show)?;
-    outcome
+        fn hide_cursor(&mut self) -> std::io::Result<()> {
+            crossterm::execute!(self.0, cursor::Hide)
+        }
+        fn show_cursor(&mut self) -> std::io::Result<()> {
+            crossterm::execute!(self.0, cursor::Show)
+        }
+    }
+
+    mcp_cli::picker::with_terminal(&mut Crossterm(std::io::stdout()), |Crossterm(stdout)| {
+        let mut drawn = 0;
+        loop {
+            let columns = terminal::size().map(|(columns, _)| columns).unwrap_or(0);
+            let lines = picker.render(details);
+            draw_picker(stdout, &lines, drawn, columns)?;
+            drawn = lines.len() as u16;
+            let key = match crossterm::event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => key,
+                _ => continue,
+            };
+            let interrupted = key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
+            let Some(key) = (if interrupted { Some(PickerKey::Cancel) } else { PickerKey::from_key_code(key.code) }) else {
+                continue;
+            };
+            match picker.handle(key) {
+                PickerOutcome::Pending => {}
+                PickerOutcome::Confirmed(names) => return Ok(Some(names)),
+                PickerOutcome::Cancelled => return Ok(None),
+            }
+        }
+    })
 }
 
 /// Redraws the picker over the `drawn` lines of its previous frame, cutting each line to the terminal's `columns`
