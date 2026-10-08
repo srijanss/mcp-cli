@@ -88,7 +88,8 @@ fn catalog_remove(target: &str) {
     let mut catalog = read_catalog(&catalog_path);
     // A path target may name a source that no longer exists, so it is resolved without touching the filesystem as a fallback.
     let target_path = std::fs::canonicalize(target).unwrap_or_else(|_| {
-        std::env::current_dir().unwrap_or_else(|error| fatal(format!("cannot read current directory: {error}"))).join(target)
+        let directory = std::env::current_dir().unwrap_or_else(|error| fatal(format!("cannot read current directory: {error}")));
+        mcp_cli::paths::absolute_lexically(&directory, std::path::Path::new(target))
     });
     let entries_before = catalog.mcp.len();
     catalog.mcp.retain(|entry| {

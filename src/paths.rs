@@ -87,3 +87,20 @@ pub fn ensure_state_layout(state_home: &std::path::Path) -> std::io::Result<()> 
 
     Ok(())
 }
+
+/// `path` made absolute against `base` with `.` and `..` resolved by name alone, so it works for paths that no
+/// longer exist; `..` at the root stays at the root.
+pub fn absolute_lexically(base: &std::path::Path, path: &std::path::Path) -> PathBuf {
+    use std::path::Component;
+    let mut resolved = PathBuf::new();
+    for component in base.join(path).components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            other => resolved.push(other),
+        }
+    }
+    resolved
+}

@@ -302,3 +302,32 @@ fn catalog_remove_of_an_unknown_target_fails_listing_the_catalogs_names_and_leav
     );
     assert_eq!(fs::read_to_string(workspace.join("config/catalog.toml")).unwrap(), before);
 }
+
+#[test]
+fn catalog_remove_by_a_parent_relative_path_drops_an_entry_whose_source_is_gone() {
+    let workspace = temporary_dir();
+    let removed = write_package(&workspace, "removed-mcp", "removed-mcp", "1.0.0");
+    assert!(mcpctl(&workspace, &workspace, &["catalog", "add", "removed-mcp"]).status.success());
+    fs::remove_dir_all(&removed).unwrap();
+    let project = workspace.join("project");
+    fs::create_dir_all(&project).unwrap();
+
+    let output = mcpctl(&workspace, &project, &["catalog", "remove", "../removed-mcp"]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output), "Removed ../removed-mcp from the catalog\n");
+    assert_eq!(fs::read_to_string(workspace.join("config/catalog.toml")).unwrap(), "");
+}
+
+#[test]
+fn catalog_remove_by_a_path_with_dot_components_drops_an_entry_whose_source_is_gone() {
+    let workspace = temporary_dir();
+    let removed = write_package(&workspace, "removed-mcp", "removed-mcp", "1.0.0");
+    assert!(mcpctl(&workspace, &workspace, &["catalog", "add", "removed-mcp"]).status.success());
+    fs::remove_dir_all(&removed).unwrap();
+
+    let output = mcpctl(&workspace, &workspace, &["catalog", "remove", "./removed-mcp/."]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(fs::read_to_string(workspace.join("config/catalog.toml")).unwrap(), "");
+}
