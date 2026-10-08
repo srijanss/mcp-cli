@@ -978,6 +978,10 @@ fn run_package(package: &str, arguments: &[String]) {
     }
     let mut command = std::process::Command::new(entrypoint);
     command.args(arguments).env("PATH", std::env::join_paths(path_entries).unwrap()).env_remove("VIRTUAL_ENV").env_remove("PYTHONHOME");
+    // MCP clients pipe stdin, so a terminal there means someone started the server by hand.
+    if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        eprintln!("{}", mcp_cli::run::terminal_notice(name, &version));
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

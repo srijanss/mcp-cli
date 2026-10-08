@@ -9,3 +9,4 @@ pub mod manifest;
 pub mod merge;
 pub mod metadata;
 pub mod registry;
+pub mod run;

@@ -318,3 +318,30 @@ fn run_prepends_selected_runtime_bin_to_path() {
     assert_eq!(output.stdout, b"helper-found");
     fs::remove_dir_all(state_home).unwrap();
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn run_started_from_a_terminal_says_on_stderr_that_the_server_is_waiting_for_a_client() {
+    let state_home = temporary_state();
+    install_fixture(&state_home, "1.0.0", "active");
+    fs::write(
+        state_home.join("registry.json"),
+        r#"{"schema_version":1,"packages":{"example-mcp":{"active_version":"1.0.0","versions":[{"version":"1.0.0","runtime":"python","source":"local","installed_at":"now"}]}}}"#,
+    )
+    .unwrap();
+
+    // `script` gives the command a pseudo-terminal, as when someone types `mcpctl run` by hand; stderr is
+    // sent through and the server's own stdout dropped, so only the note is left.
+    let output = Command::new("script")
+        .args(["-qec", &format!("{} run example-mcp 2>&1 >/dev/null", env!("CARGO_BIN_EXE_mcp-cli")), "/dev/null"])
+        .env("MCPCTL_HOME", &state_home)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stdout);
+    assert!(stderr.contains("example-mcp@1.0.0 running on stdio"), "{stderr}");
+    assert!(stderr.contains("Ctrl-C"), "{stderr}");
+    fs::remove_dir_all(state_home).unwrap();
+}
