@@ -64,7 +64,7 @@ impl Picker {
         for (index, (name, detail)) in self.names.iter().zip(details).enumerate() {
             let cursor = if index == self.cursor { '>' } else { ' ' };
             let mark = if self.selected[index] { 'x' } else { ' ' };
-            lines.push(format!("{cursor} [{mark}] {name}  {detail}"));
+            lines.push(format!("{cursor} [{mark}] {}  {}", printable(name), printable(detail)));
         }
         lines.push(String::new());
         lines.push("up/down move  space toggle  a all  n none  enter confirm  esc/q cancel".to_owned());
@@ -116,4 +116,12 @@ pub fn with_terminal<T: Terminal, R>(terminal: &mut T, body: impl FnOnce(&mut T)
     disabled?;
     shown?;
     Ok(value)
+}
+
+/// `text` with every control character written out as an escape such as `\u{1b}`, so catalog text cannot move
+/// the cursor, clear the screen or otherwise drive the terminal it is drawn on.
+pub fn printable(text: &str) -> String {
+    text.chars()
+        .map(|character| if character.is_control() { character.escape_default().to_string() } else { character.to_string() })
+        .collect()
 }

@@ -157,3 +157,17 @@ fn picker_terminal_shows_the_cursor_even_when_disabling_raw_mode_fails() {
     assert_eq!(result.unwrap_err().to_string(), "disable raw mode failed");
     assert_eq!(terminal.calls, ["enable raw mode", "hide cursor", "picker", "disable raw mode", "show cursor"]);
 }
+
+#[test]
+fn picker_renders_control_characters_in_catalog_text_as_visible_escapes() {
+    let picker = Picker::new(names(&["evil\u{7}-mcp"]), &[]);
+
+    let lines = picker.render(&names(&["1.0.0  \u{1b}[2J\u{1b}[HFAKE"]));
+
+    assert_eq!(lines[1], "> [ ] evil\\u{7}-mcp  1.0.0  \\u{1b}[2J\\u{1b}[HFAKE");
+}
+
+#[test]
+fn printable_escapes_control_characters_and_keeps_other_text() {
+    assert_eq!(mcp_cli::picker::printable("a\u{1b}[2J\tb\u{9b}c é 漢"), "a\\u{1b}[2J\\tb\\u{9b}c é 漢");
+}
