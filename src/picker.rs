@@ -60,19 +60,43 @@ impl Picker {
     /// The picker's screen: a heading, one `[x]`/`[ ]` line per MCP followed by its `details`, the
     /// cursor marked with `>`, and a key help line. When the MCPs do not fit a terminal `rows` high, only a
     /// window of them around the cursor is shown, between lines counting the MCPs hidden above and below; the
-    /// frame stays a line short of `rows` so drawing it never scrolls the terminal. A `rows` of 0 means the
-    /// terminal did not report one, so every MCP is shown.
+    /// frame stays a line short of `rows` so drawing it never scrolls the terminal. On a very short terminal the
+    /// blank line, then the heading, the key help and finally the hidden-MCP counts are dropped to make room, so
+    /// at least the cursor's MCP is always shown. A `rows` of 0 means the terminal did not report one, so every
+    /// MCP is shown.
     pub fn render(&self, details: &[String], rows: u16) -> Vec<String> {
-        // The heading, the blank line and the key help line.
-        const CHROME: usize = 3;
-        let room = usize::from(rows).saturating_sub(1 + CHROME);
-        let scrolls = rows != 0 && self.names.len() > room;
-        let visible = if scrolls { room.saturating_sub(2).max(1) } else { self.names.len() };
+        // How much of the surrounding frame each tier of a scrolling screen keeps, from most to least.
+        struct Tier {
+            heading: bool,
+            blank: bool,
+            help: bool,
+            markers: bool,
+        }
+        const TIERS: [Tier; 5] = [
+            Tier { heading: true, blank: true, help: true, markers: true },
+            Tier { heading: true, blank: false, help: true, markers: true },
+            Tier { heading: false, blank: false, help: true, markers: true },
+            Tier { heading: false, blank: false, help: false, markers: true },
+            Tier { heading: false, blank: false, help: false, markers: false },
+        ];
+        let chrome = |tier: &Tier| usize::from(tier.heading) + usize::from(tier.blank) + usize::from(tier.help) + 2 * usize::from(tier.markers);
+        let budget = usize::from(rows).saturating_sub(1).max(1);
+        // Without hidden-MCP lines the whole list needs the heading, the blank line and the key help line besides.
+        let scrolls = rows != 0 && self.names.len() + 3 > budget;
+        let tier = if scrolls {
+            TIERS.iter().find(|tier| chrome(tier) < budget).unwrap_or(&TIERS[4])
+        } else {
+            &TIERS[0]
+        };
+        let visible = if scrolls { (budget - chrome(tier)).min(self.names.len()) } else { self.names.len() };
         let start = self.cursor.saturating_sub(visible / 2).min(self.names.len() - visible);
         let end = start + visible;
 
-        let mut lines = vec!["Select MCPs for this project".to_owned()];
-        if scrolls {
+        let mut lines = Vec::new();
+        if tier.heading {
+            lines.push("Select MCPs for this project".to_owned());
+        }
+        if scrolls && tier.markers {
             lines.push(if start > 0 { format!("  ^ {start} more") } else { String::new() });
         }
         for (index, (name, detail)) in self.names.iter().zip(details).enumerate().take(end).skip(start) {
@@ -80,12 +104,16 @@ impl Picker {
             let mark = if self.selected[index] { 'x' } else { ' ' };
             lines.push(format!("{cursor} [{mark}] {}  {}", printable(name), printable(detail)));
         }
-        if scrolls {
+        if scrolls && tier.markers {
             let below = self.names.len() - end;
             lines.push(if below > 0 { format!("  v {below} more") } else { String::new() });
         }
-        lines.push(String::new());
-        lines.push("up/down move  space toggle  a all  n none  enter confirm  esc/q cancel".to_owned());
+        if tier.blank {
+            lines.push(String::new());
+        }
+        if tier.help {
+            lines.push("up/down move  space toggle  a all  n none  enter confirm  esc/q cancel".to_owned());
+        }
         lines
     }
 

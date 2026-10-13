@@ -226,3 +226,41 @@ fn picker_window_stops_at_the_last_mcp_with_nothing_more_below() {
 
     assert_eq!(lines[1..7], names(&["  ^ 26 more", "  [ ] mcp-26  d", "  [ ] mcp-27  d", "  [ ] mcp-28  d", "> [ ] mcp-29  d", ""]));
 }
+
+#[test]
+fn picker_frame_fits_and_keeps_the_cursor_visible_on_very_short_terminals() {
+    for rows in 1..=12u16 {
+        for cursor in [0, 1, 15, 28, 29] {
+            let (mut picker, details) = thirty_mcps();
+            for _ in 0..cursor {
+                picker.handle(PickerKey::Down);
+            }
+
+            let lines = picker.render(&details, rows);
+
+            assert!(lines.len() <= usize::from(rows.saturating_sub(1)).max(1), "rows {rows} cursor {cursor}: {lines:?}");
+            assert!(
+                lines.iter().any(|line| line.starts_with(&format!("> [ ] mcp-{cursor:02}"))),
+                "rows {rows} cursor {cursor}: cursor line missing from {lines:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn picker_drops_the_blank_line_then_heading_help_and_markers_as_rows_run_out() {
+    let (mut picker, details) = thirty_mcps();
+    for _ in 0..15 {
+        picker.handle(PickerKey::Down);
+    }
+    let help = "up/down move  space toggle  a all  n none  enter confirm  esc/q cancel";
+
+    assert_eq!(
+        picker.render(&details, 6),
+        names(&["Select MCPs for this project", "  ^ 15 more", "> [ ] mcp-15  d", "  v 14 more", help])
+    );
+    assert_eq!(picker.render(&details, 5), names(&["  ^ 15 more", "> [ ] mcp-15  d", "  v 14 more", help]));
+    assert_eq!(picker.render(&details, 4), names(&["  ^ 15 more", "> [ ] mcp-15  d", "  v 14 more"]));
+    assert_eq!(picker.render(&details, 3), names(&["  [ ] mcp-14  d", "> [ ] mcp-15  d"]));
+    assert_eq!(picker.render(&details, 2), names(&["> [ ] mcp-15  d"]));
+}
