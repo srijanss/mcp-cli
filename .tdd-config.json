@@ -1,5 +1,0 @@
-{
-  "adapter": "cargo-adapter",
-  "adapterPath": "cargo-adapter-runner",
-  "defaultTestDir": "--workspace"
-}
