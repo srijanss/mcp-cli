@@ -300,6 +300,12 @@ fn init_fails_and_keeps_recording_a_file_no_longer_shipped_that_it_cannot_inspec
     succeeded(&mcpctl(&project, &state_home, &["sync"]));
     // The file is still there, but init can't even tell whether it exists.
     fs::set_permissions(project.join("legacy"), fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::symlink_metadata(project.join("legacy/notes.md")).is_ok() {
+        // Running with permission checks bypassed (e.g. as root): the error this test needs can't be provoked.
+        fs::set_permissions(project.join("legacy"), fs::Permissions::from_mode(0o755)).unwrap();
+        eprintln!("skipped: permission checks are bypassed for this user");
+        return;
+    }
 
     let output = mcpctl(&project, &state_home, &["init"]);
 
