@@ -606,3 +606,74 @@ fn init_never_adopts_a_file_an_installed_version_merges_into() {
     assert_eq!(fs::read_to_string(project.join("config/settings.json")).unwrap(), "{\"a\": 1}");
     assert!(record(&project)["files"].get("config/settings.json").is_none(), "{}", record(&project));
 }
+
+/// A project where `hooks-mcp@1.0.0` copied `docs/hooks.md` ("hooks v1") and so owns it, then `other-mcp@1.0.0`
+/// (shipping `other_copy` there) was added, listed first.
+fn project_with_late_second_shipper(workspace: &Path, state_home: &Path, other_copy: &str) -> PathBuf {
+    write_package(workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
+    let project = write_project(workspace, &[("hooks-mcp", "^1")]);
+    succeeded(&mcpctl(&project, state_home, &["sync"]));
+    succeeded(&mcpctl(&project, state_home, &["init"]));
+    write_package(workspace, "other-mcp", "other-mcp", "1.0.0", &[("docs/hooks.md", other_copy)]);
+    let project = write_project(workspace, &[("other-mcp", "^1"), ("hooks-mcp", "^1")]);
+    succeeded(&mcpctl(&project, state_home, &["sync"]));
+    project
+}
+
+#[test]
+fn a_shared_path_stays_with_the_mcp_that_copied_it_first_and_a_differing_copy_is_reported_as_a_conflict() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    let project = project_with_late_second_shipper(&workspace, &state_home, "other v1");
+
+    let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+    assert!(stdout.contains("WARNING: docs/hooks.md is shipped by both other-mcp and hooks-mcp; keeping hooks-mcp's (it copied it first)"), "{stdout}");
+    assert!(stdout.contains("Skipping docs/hooks.md (conflict: other-mcp@1.0.0 ships a different copy; keeping hooks-mcp@1.0.0's, which copied it first)"), "{stdout}");
+    assert!(!stdout.contains("locally modified") && !stdout.contains("already exists"), "{stdout}");
+    assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "hooks v1");
+    assert_eq!(
+        record(&project)["files"]["docs/hooks.md"],
+        serde_json::json!({ "mcp": "hooks-mcp", "version": "1.0.0", "sha256": sha256("hooks v1") })
+    );
+
+    // The owner still updates its file, and nothing changes hands on later runs.
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
+    assert!(stdout.contains("Updated docs/hooks.md"), "{stdout}");
+    assert!(stdout.contains("Skipping docs/hooks.md (conflict: other-mcp@1.0.0 ships a different copy; keeping hooks-mcp@1.1.0's, which copied it first)"), "{stdout}");
+    let before = fs::read(project.join(".mcpctl.scaffold.json")).unwrap();
+    succeeded(&mcpctl(&project, &state_home, &["init"]));
+    assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "hooks v2");
+    assert_eq!(fs::read(project.join(".mcpctl.scaffold.json")).unwrap(), before);
+    assert_eq!(record(&project)["files"]["docs/hooks.md"]["mcp"], "hooks-mcp");
+}
+
+#[test]
+fn a_non_owner_shipping_the_owners_exact_copy_of_a_shared_path_reports_nothing_about_it() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    let project = project_with_late_second_shipper(&workspace, &state_home, "hooks v1");
+
+    let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+    assert!(!stdout.contains("Skipping docs/hooks.md") && !stdout.contains("Copied docs/hooks.md"), "{stdout}");
+    assert_eq!(record(&project)["files"]["docs/hooks.md"]["mcp"], "hooks-mcp");
+}
+
+#[test]
+fn a_non_owner_never_recreates_a_shared_path_the_project_deleted() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    let project = project_with_late_second_shipper(&workspace, &state_home, "other v1");
+    fs::remove_file(project.join("docs/hooks.md")).unwrap();
+
+    succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+    assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "hooks v1", "only the owner copies it again");
+    assert_eq!(
+        record(&project)["files"]["docs/hooks.md"],
+        serde_json::json!({ "mcp": "hooks-mcp", "version": "1.0.0", "sha256": sha256("hooks v1") })
+    );
+}
