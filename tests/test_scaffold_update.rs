@@ -454,3 +454,60 @@ fn init_adopts_an_unrecorded_file_an_earlier_version_copied_from_a_since_renamed
         serde_json::json!({ "mcp": "hooks-mcp", "version": "1.1.0", "sha256": sha256("hooks v2") })
     );
 }
+
+#[test]
+fn init_never_adopts_an_identical_file_another_mcp_already_records() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    // other-mcp copies docs/hooks.md first and records it; hooks-mcp 1.0.0 shipped the very same bytes there.
+    write_package(&workspace, "other-mcp", "other-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
+    let project = write_project(&workspace, &[("other-mcp", "^1"), ("hooks-mcp", "^1")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+
+    succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+    assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "hooks v1");
+    assert_eq!(
+        record(&project)["files"]["docs/hooks.md"],
+        serde_json::json!({ "mcp": "other-mcp", "version": "1.0.0", "sha256": sha256("hooks v1") })
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn init_never_adopts_an_unrecorded_symlink_even_to_identical_content() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    let project = pre_record_project_upgraded_to(&workspace, &state_home, "hooks v2");
+    let target = workspace.join("shared-hooks.md");
+    fs::write(&target, "hooks v1").unwrap();
+    fs::remove_file(project.join("docs/hooks.md")).unwrap();
+    std::os::unix::fs::symlink(&target, project.join("docs/hooks.md")).unwrap();
+
+    let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+    assert!(stdout.contains("Skipping docs/hooks.md (already exists)"), "{stdout}");
+    assert!(fs::symlink_metadata(project.join("docs/hooks.md")).unwrap().file_type().is_symlink());
+    assert_eq!(fs::read_to_string(&target).unwrap(), "hooks v1");
+    assert!(record(&project)["files"].get("docs/hooks.md").is_none(), "{}", record(&project));
+}
+
+#[cfg(unix)]
+#[test]
+fn init_never_adopts_an_unrecorded_dangling_symlink() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    let project = pre_record_project_upgraded_to(&workspace, &state_home, "hooks v2");
+    let target = workspace.join("missing-hooks.md");
+    fs::remove_file(project.join("docs/hooks.md")).unwrap();
+    std::os::unix::fs::symlink(&target, project.join("docs/hooks.md")).unwrap();
+
+    succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+    assert!(fs::symlink_metadata(project.join("docs/hooks.md")).unwrap().file_type().is_symlink());
+    assert!(!target.exists(), "nothing was written through the dangling symlink");
+    assert!(record(&project)["files"].get("docs/hooks.md").is_none(), "{}", record(&project));
+}
