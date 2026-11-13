@@ -92,3 +92,21 @@ fn init_records_each_copied_file_once_and_leaves_the_record_alone_on_rerun() {
     succeeded(&mcpctl(&project, &state_home, &["init"]));
     assert_eq!(fs::read(project.join(".mcpctl.scaffold.json")).unwrap(), before);
 }
+
+#[cfg(unix)]
+#[test]
+fn init_never_writes_through_a_symlink_planted_at_the_record_temp_path() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
+    let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    let victim = workspace.join("victim.txt");
+    fs::write(&victim, "precious").unwrap();
+    std::os::unix::fs::symlink(&victim, project.join(".mcpctl.scaffold.json.tmp")).unwrap();
+
+    succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "precious");
+    assert!(record(&project)["files"]["docs/hooks.md"].is_object());
+}

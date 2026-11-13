@@ -52,8 +52,19 @@ pub fn save_if_changed(root: &Path, record: &ScaffoldRecord) -> Result<bool, Str
     }
     // Write beside the record and rename over it, so an interrupted write never leaves a truncated record.
     let partial = root.join(format!("{FILE_NAME}.tmp"));
-    std::fs::write(&partial, rendered)
+    write_new(&partial, rendered.as_bytes())
         .and_then(|()| std::fs::rename(&partial, &path))
         .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
     Ok(true)
+}
+
+/// Writes `bytes` to a freshly created file at `path`. Whatever was left there before (a stale temporary
+/// from an interrupted run, or a symlink planted in the project) is unlinked, never written through.
+fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    match std::fs::remove_file(path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+        _ => {}
+    }
+    std::fs::OpenOptions::new().write(true).create_new(true).open(path)?.write_all(bytes)
 }
