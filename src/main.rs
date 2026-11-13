@@ -379,7 +379,8 @@ fn read_project_lock(lock_path: &std::path::Path) -> Option<mcp_cli::project_loc
         .unwrap_or_else(|error| fatal(format!("{} is malformed: {error}", lock_path.display()))))
 }
 
-/// Locks the MCPs declared by the project containing the working directory and installs each locked version.
+/// Locks the MCPs declared by the project containing the working directory, installs each locked version, and
+/// applies their scaffolds as `init` does, so unmodified scaffold files follow the locked versions.
 fn sync_project(locked: bool) {
     let (root, manifest) = current_project();
     let lock = mcp_cli::project_lock::resolve_project_lock(&manifest, &root).unwrap_or_else(|error| fatal(error));
@@ -394,6 +395,7 @@ fn sync_project(locked: bool) {
         mcp_cli::project_lock::write_project_lock(&root, &lock).unwrap_or_else(|error| fatal(error));
     }
     install_locked_mcps(&root, &lock);
+    apply_scaffolds(&root, &manifest, "sync");
 }
 
 /// Installs each locked version the shared store does not already hold, then checks every one can be launched.
@@ -446,12 +448,18 @@ fn verify_installed_entrypoint(version_root: &std::path::Path) -> Result<(), Str
 /// Scaffolds every MCP declared by the project containing the working directory into the project root.
 fn init_project() {
     let (root, manifest) = current_project();
-    let (applied, failed) = scaffold_project(&root, &manifest);
+    apply_scaffolds(&root, &manifest, "init");
+}
+
+/// Applies every declared MCP's scaffold to `root`, warns about requirements the applied ones leave unmet, and
+/// exits naming `command` as failed if any MCP's scaffold failed.
+fn apply_scaffolds(root: &std::path::Path, manifest: &mcp_cli::project::ProjectManifest, command: &str) {
+    let (applied, failed) = scaffold_project(root, manifest);
     for (name, scaffold) in &applied {
         warn_missing_requirements(name, scaffold);
     }
     if !failed.is_empty() {
-        fatal(format!("init failed for {}", failed.join(", ")));
+        fatal(format!("{command} failed for {}", failed.join(", ")));
     }
 }
 
@@ -478,21 +486,52 @@ fn scaffold_project(root: &std::path::Path, manifest: &mcp_cli::project::Project
         });
         (name, resolved)
     }).collect();
+    let mut record = mcp_cli::scaffold_record::load(root).unwrap_or_else(|error| fatal(error));
     warn_scaffold_clashes(resolved.iter().filter_map(|(name, resolved)| match resolved {
         Ok((_, source, Some(scaffold))) => Some((*name, source.as_path(), scaffold)),
         _ => None,
-    }));
+    }), &record);
+    // The scaffold each project MCP ships this run: a path another MCP owns is compared with the owner's copy.
+    let selected: SelectedScaffolds = resolved.iter()
+        .filter_map(|(name, resolved)| match resolved {
+            Ok((version, source, Some(scaffold))) => Some((*name, (version.as_str(), source.as_path(), scaffold))),
+            _ => None,
+        })
+        .collect();
     let (mut applied, mut failed) = (Vec::new(), Vec::new());
-    for (name, resolved) in resolved {
-        let initialized = resolved.and_then(|(version, source, scaffold)| {
+    for (name, resolved) in &resolved {
+        let name = *name;
+        let initialized = resolved.as_ref().map_err(String::clone).and_then(|(version, source, scaffold)| {
             println!("Initializing {name}@{version}");
+            // An MCP only ever updates files it copied itself, so two MCPs shipping a path never take turns.
+            let owned = mcp_cli::scaffold_record::ScaffoldRecord {
+                files: record.files.iter().filter(|(_, entry)| entry.mcp == name).map(|(path, entry)| (path.clone(), entry.clone())).collect(),
+                ..Default::default()
+            };
             match scaffold {
-                Some(scaffold) => apply_scaffold(&source, &scaffold, root)
-                    .map(|()| applied.push((name.to_owned(), scaffold)))
-                    .map_err(|error| format!("{name}@{version}: {error}")),
+                Some(scaffold) => {
+                    let mut copies = ScaffoldCopies::default();
+                    // A file no MCP has recorded may still be one an installed version copied before records were kept.
+                    let versions = registry.packages.get(name).map(|package| package.versions.iter().map(|installed| installed.version.clone()).collect()).unwrap_or_default();
+                    let installed = InstalledScaffolds::new(&state_home, name, versions);
+                    let claimed = SharedPaths {
+                        claimed: record.files.iter().filter(|(_, entry)| entry.mcp != name).map(|(path, entry)| (path.clone(), entry.clone())).collect(),
+                        selected: &selected,
+                        this: format!("{name}@{version}"),
+                    };
+                    let known = KnownFiles { recorded: &owned, claimed: &claimed, installed: &installed };
+                    let result = apply_scaffold(source, scaffold, root, &known, &mut copies);
+                    record_copied_files(&mut record, name, version, &copies.copied);
+                    // Only a scaffold applied in full tells which recorded files it no longer ships.
+                    let result = result.and_then(|()| forget_dropped_files(&mut record, root, name, version, &owned, &copies.shipped));
+                    result.map(|()| applied.push(name))
+                        .map_err(|error| format!("{name}@{version}: {error}"))
+                }
                 None => {
                     println!("Skipping {name}@{version} (no [scaffold])");
-                    Ok(())
+                    // A version that ships no scaffold at all no longer ships any file its predecessors copied.
+                    forget_dropped_files(&mut record, root, name, version, &owned, &Default::default())
+                        .map_err(|error| format!("{name}@{version}: {error}"))
                 }
             }
         });
@@ -501,7 +540,54 @@ fn scaffold_project(root: &std::path::Path, manifest: &mcp_cli::project::Project
             failed.push(name.to_owned());
         }
     }
+    mcp_cli::scaffold_record::save_if_changed(root, &record).unwrap_or_else(|error| fatal(error));
+    // The scaffolds applied in full, handed back for their requirement checks.
+    let applied = resolved.into_iter().filter_map(|(name, resolved)| match resolved {
+        Ok((_, _, Some(scaffold))) if applied.contains(&name) => Some((name.to_owned(), scaffold)),
+        _ => None,
+    }).collect();
     (applied, failed)
+}
+
+/// Records each of `copied` (target-relative paths `name@version` just copied, with their sha256).
+fn record_copied_files(record: &mut mcp_cli::scaffold_record::ScaffoldRecord, name: &str, version: &str, copied: &[(std::path::PathBuf, String)]) {
+    for (path, sha256) in copied {
+        record.files.insert(record_key(path), mcp_cli::scaffold_record::RecordedFile {
+            mcp: name.to_owned(),
+            version: version.to_owned(),
+            sha256: sha256.clone(),
+        });
+    }
+}
+
+/// Drops from `record` each file `owned` by `name` that `name@version` no longer ships (not in `shipped`),
+/// reporting it. The file itself is never deleted.
+fn forget_dropped_files(record: &mut mcp_cli::scaffold_record::ScaffoldRecord, root: &std::path::Path, name: &str, version: &str, owned: &mcp_cli::scaffold_record::ScaffoldRecord, shipped: &std::collections::BTreeSet<String>) -> Result<(), String> {
+    for (path, entry) in owned.files.iter().filter(|(path, _)| !shipped.contains(*path)) {
+        let file = root.join(path);
+        // A file the project already deleted needs no report; a symlink (dangling or not) is still there. Any
+        // other error leaves it unknown whether the file is there, so it stays recorded.
+        match std::fs::symlink_metadata(&file) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("cannot inspect {path}: {error}")),
+            Ok(metadata) => {
+                let unchanged = metadata.file_type().is_file()
+                    && mcp_cli::scaffold_copy::sha256_file(&file).map_err(|error| format!("cannot read {path}: {error}"))? == entry.sha256;
+                if unchanged {
+                    println!("{path} is no longer shipped by {name}@{version} and is unchanged; it is safe to delete");
+                } else {
+                    println!("{path} is no longer shipped by {name}@{version} and is locally modified; keeping it");
+                }
+            }
+        }
+        record.files.remove(path);
+    }
+    Ok(())
+}
+
+/// A target-relative path as the record keys it: `/`-separated on every platform.
+fn record_key(path: &std::path::Path) -> String {
+    path.components().map(|component| component.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/")
 }
 
 /// Warns about each tool `name`'s scaffold requires that is not on `PATH`.
@@ -513,7 +599,8 @@ fn warn_missing_requirements(name: &str, scaffold: &mcp_cli::manifest::Scaffold)
 
 /// Warns about each file a later MCP's scaffold would copy (not merge) to a path an earlier MCP's scaffold
 /// already fills: `init` never overwrites, so the later MCP's file would be silently skipped.
-fn warn_scaffold_clashes<'a>(scaffolds: impl Iterator<Item = (&'a str, &'a std::path::Path, &'a mcp_cli::manifest::Scaffold)>) {
+/// A path `record` names a later MCP as having copied stays that MCP's, and the warning says so.
+fn warn_scaffold_clashes<'a>(scaffolds: impl Iterator<Item = (&'a str, &'a std::path::Path, &'a mcp_cli::manifest::Scaffold)>, record: &mcp_cli::scaffold_record::ScaffoldRecord) {
     let mut first_shipped_by = std::collections::BTreeMap::new();
     for (name, source, scaffold) in scaffolds {
         let mut destinations = Vec::new();
@@ -529,10 +616,11 @@ fn warn_scaffold_clashes<'a>(scaffolds: impl Iterator<Item = (&'a str, &'a std::
         }
         for (path, merges) in destinations {
             match first_shipped_by.get(&path) {
-                Some(&first) if first != name && !merges => println!(
-                    "WARNING: {} is shipped by both {first} and {name}; keeping {first}'s (listed first in .mcpctl.toml)",
-                    path.display()
-                ),
+                Some(&first) if first != name && !merges => {
+                    let copied_by_later = record.files.get(&record_key(&path)).is_some_and(|entry| entry.mcp == name);
+                    let kept = if copied_by_later { format!("{name}'s (it copied it first)") } else { format!("{first}'s (listed first in .mcpctl.toml)") };
+                    println!("WARNING: {} is shipped by both {first} and {name}; keeping {kept}", path.display());
+                }
                 Some(_) => {}
                 None => {
                     first_shipped_by.insert(path, name);
@@ -585,7 +673,8 @@ fn init_package(selector: &str, target: Option<&std::path::Path>) {
     let (source, scaffold) = installed_scaffold(&state_home, name, &version).unwrap_or_else(|error| fatal(error));
     let scaffold = scaffold.unwrap_or_else(|| fatal(format!("{name}@{version} does not ship a scaffold")));
     let target = target.map(std::path::Path::to_path_buf).unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|error| fatal(error.to_string())));
-    apply_scaffold(&source, &scaffold, &target).unwrap_or_else(|error| fatal(error));
+    let nothing_known = KnownFiles { recorded: &Default::default(), claimed: &SharedPaths::none(), installed: &InstalledScaffolds::none() };
+    apply_scaffold(&source, &scaffold, &target, &nothing_known, &mut ScaffoldCopies::default()).unwrap_or_else(|error| fatal(error));
     warn_missing_requirements(name, &scaffold);
 }
 
@@ -599,8 +688,96 @@ fn installed_scaffold(state_home: &std::path::Path, name: &str, version: &str) -
     Ok((source, manifest.scaffold))
 }
 
+/// The source snapshot and scaffold of every registered installed version of an MCP that ships one, loaded
+/// the first time they are asked for: only a file that may be a pre-record copy needs them. A version whose
+/// snapshot can't be read is left out with a warning, so a damaged old version never blocks the selected one.
+struct InstalledScaffolds<'a> {
+    state_home: &'a std::path::Path,
+    name: &'a str,
+    versions: Vec<String>,
+    loaded: std::cell::OnceCell<Vec<(std::path::PathBuf, mcp_cli::manifest::Scaffold)>>,
+}
+
+impl<'a> InstalledScaffolds<'a> {
+    fn new(state_home: &'a std::path::Path, name: &'a str, versions: Vec<String>) -> Self {
+        Self { state_home, name, versions, loaded: std::cell::OnceCell::new() }
+    }
+
+    /// No installed versions at all.
+    fn none() -> Self { Self::new(std::path::Path::new(""), "", Vec::new()) }
+
+    fn get(&self) -> &[(std::path::PathBuf, mcp_cli::manifest::Scaffold)] {
+        self.loaded.get_or_init(|| self.versions.iter().filter_map(|version| match installed_scaffold(self.state_home, self.name, version) {
+            Ok((source, scaffold)) => scaffold.map(|scaffold| (source, scaffold)),
+            Err(error) => {
+                eprintln!("warning: ignoring {}@{version} when looking for files it copied: {error}", self.name);
+                None
+            }
+        }).collect())
+    }
+}
+
+/// What is known about files already in a project when applying one MCP's scaffold.
+struct KnownFiles<'a> {
+    /// The files this MCP is recorded as having copied.
+    recorded: &'a mcp_cli::scaffold_record::ScaffoldRecord,
+    /// Paths recorded as copied by another MCP.
+    claimed: &'a SharedPaths<'a>,
+    /// The source snapshot and scaffold of every installed version of this MCP.
+    installed: &'a InstalledScaffolds<'a>,
+}
+
+/// The paths another MCP copied first, which stay that MCP's: the MCP being applied never writes them.
+/// Each project MCP's selected version, source snapshot and scaffold, by name.
+type SelectedScaffolds<'a> = std::collections::BTreeMap<&'a str, (&'a str, &'a std::path::Path, &'a mcp_cli::manifest::Scaffold)>;
+
+struct SharedPaths<'a> {
+    /// Each path another MCP is recorded as having copied, with its record entry.
+    claimed: std::collections::BTreeMap<String, mcp_cli::scaffold_record::RecordedFile>,
+    /// The scaffold each project MCP ships this run.
+    selected: &'a SelectedScaffolds<'a>,
+    /// `name@version` of the MCP being applied.
+    this: String,
+}
+
+impl<'a> SharedPaths<'a> {
+    fn none() -> Self {
+        static NOTHING_SELECTED: SelectedScaffolds<'static> = std::collections::BTreeMap::new();
+        Self { claimed: Default::default(), selected: &NOTHING_SELECTED, this: String::new() }
+    }
+
+    /// For a path another MCP owns: `name@version` of the owner's copy that `source` (this MCP's copy) is
+    /// compared with, and whether the two differ. The owner's copy is the one its selected version ships there,
+    /// or the one it recorded when it no longer ships it or isn't in the project. The record only ever names
+    /// an owner: no snapshot is looked up from what it says.
+    fn compare_with_owner(&self, owner: &mcp_cli::scaffold_record::RecordedFile, key: &str, source: &std::path::Path) -> (String, std::io::Result<bool>) {
+        let differs_from = |owners_sha256: std::io::Result<String>| owners_sha256.and_then(|owners| Ok(mcp_cli::scaffold_copy::sha256_file(source)? != owners));
+        let recorded = || (owner.version.as_str(), differs_from(Ok(owner.sha256.clone())));
+        let (version, differs) = match self.selected.get(owner.mcp.as_str()) {
+            Some(&(version, root, scaffold)) => match scaffold_copy_source(root, scaffold, std::path::Path::new(key)) {
+                Ok(Some(file)) => (version, differs_from(mcp_cli::scaffold_copy::sha256_file(&file))),
+                Ok(None) => recorded(),
+                Err(error) => (version, Err(error)),
+            },
+            None => recorded(),
+        };
+        (format!("{}@{version}", owner.mcp), differs)
+    }
+}
+
+/// What applying a scaffold copied, and what it ships.
+#[derive(Default)]
+struct ScaffoldCopies {
+    /// Each file copied or updated, as a target-relative path with its sha256.
+    copied: Vec<(std::path::PathBuf, String)>,
+    /// The record key of every copied (not merged) file the scaffold ships, whether or not it was written.
+    shipped: std::collections::BTreeSet<String>,
+}
+
 /// Copies and merges `scaffold` from an installed `source` snapshot into `target`, then reports its hints.
-fn apply_scaffold(source: &std::path::Path, scaffold: &mcp_cli::manifest::Scaffold, target: &std::path::Path) -> Result<(), String> {
+/// Every file it copies or updates (not merges) is noted in `copies`, even when a later step fails. A file
+/// `known` to be unchanged since this MCP copied it is updated.
+fn apply_scaffold(source: &std::path::Path, scaffold: &mcp_cli::manifest::Scaffold, target: &std::path::Path, known: &KnownFiles, copies: &mut ScaffoldCopies) -> Result<(), String> {
     // `exclude` filters the `dirs` copies only; a file named in `files` is always copied.
     for file in &scaffold.files {
         let destination = target.join(&file.to);
@@ -609,12 +786,15 @@ fn apply_scaffold(source: &std::path::Path, scaffold: &mcp_cli::manifest::Scaffo
                 .map_err(|error| format!("cannot merge {}: {error}", file.to))?;
             continue;
         }
-        copy_scaffold_tree(source, target, std::path::Path::new(&file.from), std::path::Path::new(&file.to), &[])
+        // A file with a merge mode is the project's to extend, so it is never recorded even when copied fresh.
+        let mut unrecorded = ScaffoldCopies::default();
+        let noted = if file.merge.is_some() { &mut unrecorded } else { &mut *copies };
+        copy_scaffold_tree(source, target, std::path::Path::new(&file.from), std::path::Path::new(&file.to), &[], known, noted)
             .map_err(|error| format!("cannot copy {}: {error}", file.from))?;
     }
     for dir in &scaffold.dirs {
         let relative = std::path::Path::new(dir);
-        copy_scaffold_tree(source, target, relative, relative, &scaffold.exclude)
+        copy_scaffold_tree(source, target, relative, relative, &scaffold.exclude, known, copies)
             .map_err(|error| format!("cannot copy {dir}: {error}"))?;
     }
     // A hint applies when it has no marker file, or its marker file exists in the target.
@@ -661,7 +841,9 @@ fn merge_scaffold_file(template: &std::path::Path, destination: &std::path::Path
 }
 
 /// Copies `from` (a file or directory, relative to `source_root`) to `to` under `target_root`, skipping `exclude`d source paths.
-fn copy_scaffold_tree(source_root: &std::path::Path, target_root: &std::path::Path, from: &std::path::Path, to: &std::path::Path, exclude: &[String]) -> std::io::Result<()> {
+/// Every file reached is noted as shipped in `copies`; each one copied, or updated because it is `known` to be
+/// unchanged since this MCP copied it, is also noted as copied with its sha256.
+fn copy_scaffold_tree(source_root: &std::path::Path, target_root: &std::path::Path, from: &std::path::Path, to: &std::path::Path, exclude: &[String], known: &KnownFiles, copies: &mut ScaffoldCopies) -> std::io::Result<()> {
     if exclude.iter().any(|excluded| std::path::Path::new(excluded) == from) { return Ok(()); }
     let source = source_root.join(from);
     let destination = target_root.join(to);
@@ -669,19 +851,109 @@ fn copy_scaffold_tree(source_root: &std::path::Path, target_root: &std::path::Pa
         std::fs::create_dir_all(&destination)?;
         for entry in std::fs::read_dir(&source)? {
             let name = entry?.file_name();
-            copy_scaffold_tree(source_root, target_root, &from.join(&name), &to.join(&name), exclude)?;
+            copy_scaffold_tree(source_root, target_root, &from.join(&name), &to.join(&name), exclude, known, copies)?;
         }
     } else if source.is_file() {
-        // Never overwrite a file the target project already has.
-        if destination.exists() {
-            println!("Skipping {} (already exists)", to.display());
+        let key = record_key(to);
+        copies.shipped.insert(key.clone());
+        // A path another MCP copied first stays its own: never written, recreated or adopted by this one.
+        if let Some(owner) = known.claimed.claimed.get(&key) {
+            // Comparing the copies only decides what to report, so failing to doesn't stop this MCP's other files.
+            match known.claimed.compare_with_owner(owner, &key, &source) {
+                (owner, Ok(true)) => println!("Skipping {} (conflict: {} ships a different copy; keeping {owner}'s, which copied it first)", to.display(), known.claimed.this),
+                (_, Ok(false)) => {}
+                (owner, Err(error)) => eprintln!("warning: cannot compare {} with {owner}'s copy: {error}; keeping {owner}'s, which copied it first", to.display()),
+            }
+            return Ok(());
+        }
+        // Only a file this tool copied and the project hasn't changed since is ever overwritten.
+        // symlink_metadata, not exists(): a dangling symlink the project put here is still something already there.
+        if std::fs::symlink_metadata(&destination).is_ok() {
+            let copied_sha256 = match known.recorded.files.get(&key) {
+                Some(entry) => entry.sha256.clone(),
+                None => match unrecorded_installed_copy(&destination, &key, known)? {
+                    Some(sha256) => sha256,
+                    None => {
+                        println!("Skipping {} (already exists)", to.display());
+                        return Ok(());
+                    }
+                },
+            };
+            // A path the project turned into a symlink (or anything but a regular file) is a local change too.
+            let still_a_file = std::fs::symlink_metadata(&destination)?.file_type().is_file();
+            if !still_a_file || mcp_cli::scaffold_copy::sha256_file(&destination)? != copied_sha256 {
+                println!("Skipping {} (locally modified; merge {} by hand)", to.display(), source.display());
+                return Ok(());
+            }
+            let mut sha256 = mcp_cli::scaffold_copy::sha256_file(&source)?;
+            if sha256 != copied_sha256 {
+                sha256 = mcp_cli::scaffold_copy::replace_hashing(&source, &destination)?;
+                println!("Updated {}", to.display());
+            }
+            copies.copied.push((to.to_path_buf(), sha256));
             return Ok(());
         }
         if let Some(parent) = destination.parent() { std::fs::create_dir_all(parent)?; }
-        std::fs::copy(&source, &destination)?;
+        let sha256 = copy_hashing(&source, &destination)?;
         println!("Copied {}", to.display());
+        copies.copied.push((to.to_path_buf(), sha256));
     }
     Ok(())
+}
+
+/// For a file at `destination` (record key `key`) that no MCP has recorded: its sha256 when it is a regular file
+/// byte-identical to the file some installed version of this MCP copies (not merges) there, i.e. a copy made
+/// before records were kept.
+fn unrecorded_installed_copy(destination: &std::path::Path, key: &str, known: &KnownFiles) -> std::io::Result<Option<String>> {
+    if known.claimed.claimed.contains_key(key) || !std::fs::symlink_metadata(destination)?.file_type().is_file() { return Ok(None); }
+    let mut candidates = Vec::new();
+    for (source, scaffold) in known.installed.get() {
+        candidates.extend(scaffold_copy_source(source, scaffold, std::path::Path::new(key))?);
+    }
+    // With no installed version that copies a file here, the file is never read.
+    if candidates.is_empty() { return Ok(None); }
+    let sha256 = mcp_cli::scaffold_copy::sha256_file(destination)?;
+    for candidate in candidates {
+        if mcp_cli::scaffold_copy::sha256_file(&candidate)? == sha256 { return Ok(Some(sha256)); }
+    }
+    Ok(None)
+}
+
+/// The regular file in `source` that applying `scaffold` copies to the target-relative path `to`, if any. A
+/// path a merge entry fills is the project's to extend, so it has none. `files` are applied before `dirs`, and
+/// the first to reach a path fills it.
+fn scaffold_copy_source(source: &std::path::Path, scaffold: &mcp_cli::manifest::Scaffold, to: &std::path::Path) -> std::io::Result<Option<std::path::PathBuf>> {
+    let regular_file = |path: std::path::PathBuf| match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => Ok(metadata.file_type().is_file().then_some(path)),
+        Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => Ok(None),
+        Err(error) => Err(error),
+    };
+    // The source path under `from` that `to` is reached by when `to_root` is copied from `from`.
+    let beneath = |from: &str, to_root: &str| to.strip_prefix(to_root).ok().map(|rest| {
+        if rest.as_os_str().is_empty() { std::path::Path::new(from).to_path_buf() } else { std::path::Path::new(from).join(rest) }
+    });
+    for file in &scaffold.files {
+        let Some(from) = beneath(&file.from, &file.to) else { continue };
+        if let Some(path) = regular_file(source.join(from))? {
+            return Ok(file.merge.is_none().then_some(path));
+        }
+    }
+    for dir in &scaffold.dirs {
+        let Some(from) = beneath(dir, dir) else { continue };
+        // `exclude` names a source path at any level of the walk from `dir` down to the file itself.
+        let excluded = from.ancestors().take_while(|ancestor| ancestor.starts_with(dir))
+            .any(|ancestor| scaffold.exclude.iter().any(|excluded| std::path::Path::new(excluded) == ancestor));
+        if excluded { continue; }
+        if let Some(path) = regular_file(source.join(from))? { return Ok(Some(path)); }
+    }
+    Ok(None)
+}
+
+/// Copies `source` to a new file at `destination` with the same permissions, returning its sha256.
+fn copy_hashing(source: &std::path::Path, destination: &std::path::Path) -> std::io::Result<String> {
+    let mut reader = std::fs::File::open(source)?;
+    let permissions = reader.metadata()?.permissions();
+    mcp_cli::scaffold_copy::copy_new_hashing(&mut reader, destination, permissions)
 }
 
 fn install_package(project: &str) {

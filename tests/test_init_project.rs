@@ -230,7 +230,8 @@ fn init_names_the_mcp_that_failed_and_still_initializes_the_rest() {
     let state_home = workspace.join("state");
     add_shared_config(&workspace, "project-mcp", "project-mcp");
     fs::write(project.join(".mcp.json"), "{ not json").unwrap();
-    assert!(mcpctl(&project, &state_home, &["sync"]).status.success());
+    assert!(mcpctl(&workspace, &state_home, &["install", "project-mcp"]).status.success());
+    assert!(mcpctl(&workspace, &state_home, &["install", "design-advisor-mcp"]).status.success());
 
     let output = mcpctl(&project, &state_home, &["init"]);
 
@@ -318,7 +319,8 @@ fn init_fails_naming_a_malformed_lock_without_falling_back_to_the_active_version
 fn init_without_an_mcp_heads_each_project_mcps_output_with_its_name_and_version() {
     let (workspace, project) = workspace_with_project();
     let state_home = workspace.join("state");
-    assert!(mcpctl(&project, &state_home, &["sync"]).status.success());
+    assert!(mcpctl(&workspace, &state_home, &["install", "project-mcp"]).status.success());
+    assert!(mcpctl(&workspace, &state_home, &["install", "design-advisor-mcp"]).status.success());
     let single_target = workspace.join("single");
 
     let output = mcpctl(&project, &state_home, &["init"]);
