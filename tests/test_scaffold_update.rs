@@ -158,3 +158,24 @@ fn init_leaves_a_recorded_file_the_project_replaced_with_a_symlink_alone() {
     assert_eq!(fs::read_to_string(&shared).unwrap(), "hooks v1");
     assert_eq!(record(&project)["files"]["docs/hooks.md"]["version"], "1.0.0");
 }
+
+#[cfg(unix)]
+#[test]
+fn init_leaves_a_recorded_file_the_project_replaced_with_a_dangling_symlink_alone() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
+    let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    succeeded(&mcpctl(&project, &state_home, &["init"]));
+    fs::remove_file(project.join("docs/hooks.md")).unwrap();
+    std::os::unix::fs::symlink(workspace.join("nowhere.md"), project.join("docs/hooks.md")).unwrap();
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+
+    let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+    assert!(stdout.contains("Skipping docs/hooks.md (locally modified"), "{stdout}");
+    assert!(fs::symlink_metadata(project.join("docs/hooks.md")).unwrap().file_type().is_symlink());
+    assert_eq!(record(&project)["files"]["docs/hooks.md"]["version"], "1.0.0");
+}

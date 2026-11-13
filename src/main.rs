@@ -707,7 +707,8 @@ fn copy_scaffold_tree(source_root: &std::path::Path, target_root: &std::path::Pa
         }
     } else if source.is_file() {
         // Only a file this tool copied and the project hasn't changed since is ever overwritten.
-        if destination.exists() {
+        // symlink_metadata, not exists(): a dangling symlink the project put here is still something already there.
+        if std::fs::symlink_metadata(&destination).is_ok() {
             let Some(entry) = recorded.files.get(&record_key(to)) else {
                 println!("Skipping {} (already exists)", to.display());
                 return Ok(());
