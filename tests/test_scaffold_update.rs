@@ -554,3 +554,55 @@ fn init_skips_an_unreadable_inactive_snapshot_with_a_warning_when_looking_for_pr
     assert!(!stderr.contains("notes.txt"), "{stderr}");
     assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "hooks v1");
 }
+
+#[test]
+fn init_never_adopts_a_file_an_installed_version_excludes_from_the_dir_that_reaches_it() {
+    // The excluded path is the file itself, or a directory above it.
+    for (excluded, path) in [("docs/hooks.md", "docs/hooks.md"), ("docs/inner", "docs/inner/hooks.md")] {
+        let workspace = temporary_dir();
+        let state_home = workspace.join("state");
+        write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[]);
+        let source = workspace.join("hooks-mcp");
+        fs::create_dir_all(source.join(path).parent().unwrap()).unwrap();
+        fs::write(source.join(path), "the project's own").unwrap();
+        let manifest = fs::read_to_string(source.join("mcpctl.toml")).unwrap()
+            .replace("[scaffold]\n", &format!("[scaffold]\ndirs = [\"docs\"]\nexclude = [\"{excluded}\"]\n"));
+        fs::write(source.join("mcpctl.toml"), manifest).unwrap();
+        let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
+        succeeded(&mcpctl(&project, &state_home, &["sync"]));
+        fs::create_dir_all(project.join(path).parent().unwrap()).unwrap();
+        fs::write(project.join(path), "the project's own").unwrap();
+        write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[(path, "hooks v2")]);
+        succeeded(&mcpctl(&project, &state_home, &["sync"]));
+
+        let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+        assert!(stdout.contains(&format!("Skipping {path} (already exists)")), "{excluded}: {stdout}");
+        assert_eq!(fs::read_to_string(project.join(path)).unwrap(), "the project's own", "{excluded}");
+        assert!(record(&project)["files"].get(path).is_none(), "{excluded}: {}", record(&project));
+    }
+}
+
+#[test]
+fn init_never_adopts_a_file_an_installed_version_merges_into() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    // 1.0.0 merges templates/settings.json into config/settings.json; 1.1.0 copies a settings file there.
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("settings.json", "{\"a\": 1}")]);
+    let manifest = workspace.join("hooks-mcp/mcpctl.toml");
+    let merged = fs::read_to_string(&manifest).unwrap()
+        .replace("to = \"settings.json\"\n", "to = \"config/settings.json\"\nmerge = \"json\"\n");
+    fs::write(&manifest, merged).unwrap();
+    let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    fs::create_dir_all(project.join("config")).unwrap();
+    fs::write(project.join("config/settings.json"), "{\"a\": 1}").unwrap();
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("config/settings.json", "{\"b\": 2}")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+
+    let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+    assert!(stdout.contains("Skipping config/settings.json (already exists)"), "{stdout}");
+    assert_eq!(fs::read_to_string(project.join("config/settings.json")).unwrap(), "{\"a\": 1}");
+    assert!(record(&project)["files"].get("config/settings.json").is_none(), "{}", record(&project));
+}
