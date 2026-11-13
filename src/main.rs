@@ -379,7 +379,8 @@ fn read_project_lock(lock_path: &std::path::Path) -> Option<mcp_cli::project_loc
         .unwrap_or_else(|error| fatal(format!("{} is malformed: {error}", lock_path.display()))))
 }
 
-/// Locks the MCPs declared by the project containing the working directory and installs each locked version.
+/// Locks the MCPs declared by the project containing the working directory, installs each locked version, and
+/// applies their scaffolds as `init` does, so unmodified scaffold files follow the locked versions.
 fn sync_project(locked: bool) {
     let (root, manifest) = current_project();
     let lock = mcp_cli::project_lock::resolve_project_lock(&manifest, &root).unwrap_or_else(|error| fatal(error));
@@ -394,6 +395,7 @@ fn sync_project(locked: bool) {
         mcp_cli::project_lock::write_project_lock(&root, &lock).unwrap_or_else(|error| fatal(error));
     }
     install_locked_mcps(&root, &lock);
+    apply_scaffolds(&root, &manifest, "sync");
 }
 
 /// Installs each locked version the shared store does not already hold, then checks every one can be launched.
@@ -446,12 +448,18 @@ fn verify_installed_entrypoint(version_root: &std::path::Path) -> Result<(), Str
 /// Scaffolds every MCP declared by the project containing the working directory into the project root.
 fn init_project() {
     let (root, manifest) = current_project();
-    let (applied, failed) = scaffold_project(&root, &manifest);
+    apply_scaffolds(&root, &manifest, "init");
+}
+
+/// Applies every declared MCP's scaffold to `root`, warns about requirements the applied ones leave unmet, and
+/// exits naming `command` as failed if any MCP's scaffold failed.
+fn apply_scaffolds(root: &std::path::Path, manifest: &mcp_cli::project::ProjectManifest, command: &str) {
+    let (applied, failed) = scaffold_project(root, manifest);
     for (name, scaffold) in &applied {
         warn_missing_requirements(name, scaffold);
     }
     if !failed.is_empty() {
-        fatal(format!("init failed for {}", failed.join(", ")));
+        fatal(format!("{command} failed for {}", failed.join(", ")));
     }
 }
 

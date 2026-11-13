@@ -65,6 +65,23 @@ fn succeeded(output: &Output) -> String {
     stdout
 }
 
+/// Installs and activates the current version of every MCP the project at `project` declares from its
+/// `../<name>` source, as `sync` would select it, but without applying scaffolds (which `sync` also does), so
+/// `init`'s own handling can be observed. A version the store already holds is left as it is.
+fn install_declared(project: &Path, state_home: &Path) {
+    let manifest = fs::read_to_string(project.join(".mcpctl.toml")).unwrap();
+    for source in manifest.lines().filter_map(|line| line.strip_prefix("source = \"")?.strip_suffix('"')) {
+        let output = mcpctl(project, state_home, &["install", source]);
+        assert!(
+            output.status.success() || String::from_utf8_lossy(&output.stderr).contains("is already installed"),
+            "installing {source}: {}", String::from_utf8_lossy(&output.stderr)
+        );
+        let package: toml::Value = toml::from_str(&fs::read_to_string(project.join(source).join("mcpctl.toml")).unwrap()).unwrap();
+        let selector = format!("{}@{}", package["name"].as_str().unwrap(), package["version"].as_str().unwrap());
+        succeeded(&mcpctl(project, state_home, &["use", &selector]));
+    }
+}
+
 fn record(project: &Path) -> serde_json::Value {
     serde_json::from_str(&fs::read_to_string(project.join(".mcpctl.scaffold.json")).unwrap()).unwrap()
 }
@@ -79,7 +96,7 @@ fn init_records_each_copied_file_once_and_leaves_the_record_alone_on_rerun() {
     let state_home = workspace.join("state");
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[(".pi/hooks/check.mjs", "check v1"), ("docs/hooks.md", "hooks v1")]);
     let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
 
     succeeded(&mcpctl(&project, &state_home, &["init"]));
 
@@ -101,7 +118,7 @@ fn init_never_writes_through_a_symlink_planted_at_the_record_temp_path() {
     let state_home = workspace.join("state");
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
     let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
     let victim = workspace.join("victim.txt");
     fs::write(&victim, "precious").unwrap();
     std::os::unix::fs::symlink(&victim, project.join(".mcpctl.scaffold.json.tmp")).unwrap();
@@ -126,7 +143,7 @@ fn init_records_files_copied_from_scaffold_dirs_and_keeps_their_permissions() {
     let manifest = fs::read_to_string(source.join("mcpctl.toml")).unwrap().replace("[scaffold]\n", "[scaffold]\ndirs = [\"skills\"]\n");
     fs::write(source.join("mcpctl.toml"), manifest).unwrap();
     let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
 
     succeeded(&mcpctl(&project, &state_home, &["init"]));
 
@@ -148,7 +165,7 @@ fn init_keeps_the_record_of_files_copied_before_a_later_scaffold_step_fails() {
     fs::write(&manifest, fs::read_to_string(&manifest).unwrap() + failing_merge).unwrap();
     let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
     fs::write(project.join("settings.json"), "not json").unwrap();
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
 
     let output = mcpctl(&project, &state_home, &["init"]);
 
@@ -167,7 +184,7 @@ fn init_refuses_a_malformed_or_unsupported_record_before_copying_anything() {
         let state_home = workspace.join("state");
         write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
         let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
-        succeeded(&mcpctl(&project, &state_home, &["sync"]));
+        install_declared(&project, &state_home);
         fs::write(project.join(".mcpctl.scaffold.json"), contents).unwrap();
 
         let output = mcpctl(&project, &state_home, &["init"]);

@@ -65,6 +65,23 @@ fn succeeded(output: &Output) -> String {
     stdout
 }
 
+/// Installs and activates the current version of every MCP the project at `project` declares from its
+/// `../<name>` source, as `sync` would select it, but without applying scaffolds (which `sync` also does), so
+/// `init`'s own handling can be observed. A version the store already holds is left as it is.
+fn install_declared(project: &Path, state_home: &Path) {
+    let manifest = fs::read_to_string(project.join(".mcpctl.toml")).unwrap();
+    for source in manifest.lines().filter_map(|line| line.strip_prefix("source = \"")?.strip_suffix('"')) {
+        let output = mcpctl(project, state_home, &["install", source]);
+        assert!(
+            output.status.success() || String::from_utf8_lossy(&output.stderr).contains("is already installed"),
+            "installing {source}: {}", String::from_utf8_lossy(&output.stderr)
+        );
+        let package: toml::Value = toml::from_str(&fs::read_to_string(project.join(source).join("mcpctl.toml")).unwrap()).unwrap();
+        let selector = format!("{}@{}", package["name"].as_str().unwrap(), package["version"].as_str().unwrap());
+        succeeded(&mcpctl(project, state_home, &["use", &selector]));
+    }
+}
+
 fn record(project: &Path) -> serde_json::Value {
     serde_json::from_str(&fs::read_to_string(project.join(".mcpctl.scaffold.json")).unwrap()).unwrap()
 }
@@ -79,10 +96,10 @@ fn init_replaces_an_unmodified_file_with_the_newer_installed_version_and_records
     let state_home = workspace.join("state");
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
     let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
     succeeded(&mcpctl(&project, &state_home, &["init"]));
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
 
     let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
 
@@ -100,11 +117,11 @@ fn init_leaves_a_locally_modified_file_alone_and_names_the_new_version_to_merge_
     let state_home = workspace.join("state");
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
     let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
     succeeded(&mcpctl(&project, &state_home, &["init"]));
     fs::write(project.join("docs/hooks.md"), "hooks v1, edited").unwrap();
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
 
     let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
 
@@ -123,11 +140,11 @@ fn updating_a_file_never_touches_a_project_file_named_like_its_temporary_copy() 
     let state_home = workspace.join("state");
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
     let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
     succeeded(&mcpctl(&project, &state_home, &["init"]));
     fs::write(project.join("docs/hooks.md.mcpctl-new"), "my own notes").unwrap();
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
 
     succeeded(&mcpctl(&project, &state_home, &["init"]));
 
@@ -142,14 +159,14 @@ fn init_leaves_a_recorded_file_the_project_replaced_with_a_symlink_alone() {
     let state_home = workspace.join("state");
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
     let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
     succeeded(&mcpctl(&project, &state_home, &["init"]));
     let shared = workspace.join("shared-hooks.md");
     fs::write(&shared, "hooks v1").unwrap();
     fs::remove_file(project.join("docs/hooks.md")).unwrap();
     std::os::unix::fs::symlink(&shared, project.join("docs/hooks.md")).unwrap();
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
 
     let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
 
@@ -166,12 +183,12 @@ fn init_leaves_a_recorded_file_the_project_replaced_with_a_dangling_symlink_alon
     let state_home = workspace.join("state");
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
     let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
     succeeded(&mcpctl(&project, &state_home, &["init"]));
     fs::remove_file(project.join("docs/hooks.md")).unwrap();
     std::os::unix::fs::symlink(workspace.join("nowhere.md"), project.join("docs/hooks.md")).unwrap();
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
 
     let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
 
@@ -186,10 +203,10 @@ fn init_reports_an_unmodified_file_no_longer_shipped_as_safe_to_delete_and_stops
     let state_home = workspace.join("state");
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1"), ("docs/legacy.md", "legacy v1")]);
     let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
     succeeded(&mcpctl(&project, &state_home, &["init"]));
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
 
     let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
 
@@ -204,11 +221,11 @@ fn init_keeps_a_locally_modified_file_no_longer_shipped_and_stops_recording_it()
     let state_home = workspace.join("state");
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1"), ("docs/legacy.md", "legacy v1")]);
     let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
     succeeded(&mcpctl(&project, &state_home, &["init"]));
     fs::write(project.join("docs/legacy.md"), "legacy v1, edited").unwrap();
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
 
     let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
 
@@ -224,11 +241,11 @@ fn init_quietly_stops_recording_a_file_no_longer_shipped_that_the_project_alread
     let state_home = workspace.join("state");
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1"), ("docs/legacy.md", "legacy v1")]);
     let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
     succeeded(&mcpctl(&project, &state_home, &["init"]));
     fs::remove_file(project.join("docs/legacy.md")).unwrap();
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
 
     let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
 
@@ -243,14 +260,14 @@ fn init_keeps_recording_files_when_the_new_scaffold_fails_before_it_has_seen_the
     let state_home = workspace.join("state");
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1"), ("docs/legacy.md", "legacy v1")]);
     let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
     succeeded(&mcpctl(&project, &state_home, &["init"]));
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
     let manifest = workspace.join("hooks-mcp/mcpctl.toml");
     let failing_merge = "\n[[scaffold.files]]\nfrom = \"templates/mcp.json\"\nto = \"settings.json\"\nmerge = \"json\"\n";
     fs::write(&manifest, fs::read_to_string(&manifest).unwrap() + failing_merge).unwrap();
     fs::write(project.join("settings.json"), "not json").unwrap();
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
 
     let output = mcpctl(&project, &state_home, &["init"]);
 
@@ -271,13 +288,13 @@ fn init_reports_every_recorded_file_when_a_new_version_drops_its_scaffold_entire
     let state_home = workspace.join("state");
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
     let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
     succeeded(&mcpctl(&project, &state_home, &["init"]));
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[]);
     let manifest = workspace.join("hooks-mcp/mcpctl.toml");
     let without_scaffold = fs::read_to_string(&manifest).unwrap().split("[scaffold]").next().unwrap().to_owned();
     fs::write(&manifest, without_scaffold).unwrap();
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
 
     let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
 
@@ -294,10 +311,10 @@ fn init_fails_and_keeps_recording_a_file_no_longer_shipped_that_it_cannot_inspec
     let state_home = workspace.join("state");
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1"), ("legacy/notes.md", "legacy v1")]);
     let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
     succeeded(&mcpctl(&project, &state_home, &["init"]));
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
     // The file is still there, but init can't even tell whether it exists.
     fs::set_permissions(project.join("legacy"), fs::Permissions::from_mode(0o000)).unwrap();
     if fs::symlink_metadata(project.join("legacy/notes.md")).is_ok() {
@@ -324,11 +341,11 @@ fn init_fails_and_keeps_recording_a_file_no_longer_shipped_that_it_cannot_inspec
 fn pre_record_project_upgraded_to(workspace: &Path, state_home: &Path, hooks_v2: &str) -> PathBuf {
     write_package(workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
     let project = write_project(workspace, &[("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, state_home, &["sync"]));
+    install_declared(&project, state_home);
     succeeded(&mcpctl(&project, state_home, &["init"]));
     fs::remove_file(project.join(".mcpctl.scaffold.json")).unwrap();
     write_package(workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", hooks_v2)]);
-    succeeded(&mcpctl(&project, state_home, &["sync"]));
+    install_declared(&project, state_home);
     project
 }
 
@@ -385,7 +402,7 @@ fn init_of_a_single_mcp_skips_an_existing_file_without_reading_it() {
     let state_home = workspace.join("state");
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
     let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
     fs::create_dir_all(project.join("docs")).unwrap();
     fs::write(project.join("docs/hooks.md"), "the project's own").unwrap();
     fs::set_permissions(project.join("docs/hooks.md"), fs::Permissions::from_mode(0o000)).unwrap();
@@ -417,11 +434,11 @@ fn init_never_adopts_a_project_file_matching_a_source_file_an_installed_version_
         .replace("[scaffold]\n", "[scaffold]\ndirs = [\"templates\"]\nexclude = [\"templates/docs\"]\n");
     fs::write(source.join("mcpctl.toml"), manifest).unwrap();
     let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
     fs::create_dir_all(project.join("docs")).unwrap();
     fs::write(project.join("docs/hooks.md"), "the project's own").unwrap();
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
 
     let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
 
@@ -439,11 +456,11 @@ fn init_adopts_an_unrecorded_file_an_earlier_version_copied_from_a_since_renamed
     let manifest = workspace.join("hooks-mcp/mcpctl.toml");
     fs::write(&manifest, fs::read_to_string(&manifest).unwrap().replace("to = \"old.md\"", "to = \"docs/hooks.md\"")).unwrap();
     let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
     succeeded(&mcpctl(&project, &state_home, &["init"]));
     fs::remove_file(project.join(".mcpctl.scaffold.json")).unwrap();
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
 
     let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
 
@@ -463,9 +480,9 @@ fn init_never_adopts_an_identical_file_another_mcp_already_records() {
     write_package(&workspace, "other-mcp", "other-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
     let project = write_project(&workspace, &[("other-mcp", "^1"), ("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
 
     succeeded(&mcpctl(&project, &state_home, &["init"]));
 
@@ -525,9 +542,9 @@ fn init_of_a_fresh_project_ignores_unreadable_inactive_snapshots() {
     let state_home = workspace.join("state");
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
     let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
     break_inactive_snapshot(&state_home);
 
     let output = mcpctl(&project, &state_home, &["init"]);
@@ -569,11 +586,11 @@ fn init_never_adopts_a_file_an_installed_version_excludes_from_the_dir_that_reac
             .replace("[scaffold]\n", &format!("[scaffold]\ndirs = [\"docs\"]\nexclude = [\"{excluded}\"]\n"));
         fs::write(source.join("mcpctl.toml"), manifest).unwrap();
         let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
-        succeeded(&mcpctl(&project, &state_home, &["sync"]));
+        install_declared(&project, &state_home);
         fs::create_dir_all(project.join(path).parent().unwrap()).unwrap();
         fs::write(project.join(path), "the project's own").unwrap();
         write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[(path, "hooks v2")]);
-        succeeded(&mcpctl(&project, &state_home, &["sync"]));
+        install_declared(&project, &state_home);
 
         let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
 
@@ -594,11 +611,11 @@ fn init_never_adopts_a_file_an_installed_version_merges_into() {
         .replace("to = \"settings.json\"\n", "to = \"config/settings.json\"\nmerge = \"json\"\n");
     fs::write(&manifest, merged).unwrap();
     let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
     fs::create_dir_all(project.join("config")).unwrap();
     fs::write(project.join("config/settings.json"), "{\"a\": 1}").unwrap();
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("config/settings.json", "{\"b\": 2}")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
 
     let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
 
@@ -612,11 +629,11 @@ fn init_never_adopts_a_file_an_installed_version_merges_into() {
 fn project_with_late_second_shipper(workspace: &Path, state_home: &Path, other_copy: &str) -> PathBuf {
     write_package(workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
     let project = write_project(workspace, &[("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, state_home, &["sync"]));
+    install_declared(&project, state_home);
     succeeded(&mcpctl(&project, state_home, &["init"]));
     write_package(workspace, "other-mcp", "other-mcp", "1.0.0", &[("docs/hooks.md", other_copy)]);
     let project = write_project(workspace, &[("other-mcp", "^1"), ("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, state_home, &["sync"]));
+    install_declared(&project, state_home);
     project
 }
 
@@ -639,7 +656,7 @@ fn a_shared_path_stays_with_the_mcp_that_copied_it_first_and_a_differing_copy_is
 
     // The owner still updates its file, and nothing changes hands on later runs.
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
     let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
     assert!(stdout.contains("Updated docs/hooks.md"), "{stdout}");
     assert!(stdout.contains("Skipping docs/hooks.md (conflict: other-mcp@1.0.0 ships a different copy; keeping hooks-mcp@1.1.0's, which copied it first)"), "{stdout}");
@@ -726,7 +743,7 @@ fn a_shared_path_its_owner_stopped_shipping_is_compared_with_the_copy_the_owner_
     let state_home = workspace.join("state");
     let project = project_with_late_second_shipper(&workspace, &state_home, "other v1");
     write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
 
     let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
 
@@ -743,7 +760,7 @@ fn an_unreadable_owners_copy_of_a_shared_path_is_warned_about_without_stopping_t
     project_with_late_second_shipper(&workspace, &state_home, "other v1");
     write_package(&workspace, "other-mcp", "other-mcp", "1.0.1", &[("docs/hooks.md", "other v1"), ("docs/other.md", "other notes")]);
     let project = write_project(&workspace, &[("other-mcp", "^1"), ("hooks-mcp", "^1")]);
-    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    install_declared(&project, &state_home);
     let owners_copy = state_home.join("packages/hooks-mcp/1.0.0/source/templates/docs/hooks.md");
     fs::set_permissions(&owners_copy, fs::Permissions::from_mode(0o000)).unwrap();
     if fs::read(&owners_copy).is_ok() {

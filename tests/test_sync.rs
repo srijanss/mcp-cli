@@ -211,3 +211,94 @@ fn sync_fails_naming_a_reused_version_whose_entrypoint_is_not_executable() {
     assert!(stderr.contains("project-mcp@0.4.3 is installed but broken"), "{stderr}");
     assert!(stderr.contains(&format!("entrypoint {} is not executable", entrypoint.display())), "{stderr}");
 }
+
+/// Writes a binary-runtime MCP source at `workspace/dir` whose scaffold copies each `(path, contents)` in
+/// `files` to the same project-relative path.
+fn write_scaffold_package(workspace: &Path, dir: &str, name: &str, version: &str, files: &[(&str, &str)]) {
+    write_package(workspace, dir, name, version);
+    let source = workspace.join(dir);
+    let mut manifest = fs::read_to_string(source.join("mcpctl.toml")).unwrap() + "\n[scaffold]\n";
+    for (path, contents) in files {
+        manifest.push_str(&format!("\n[[scaffold.files]]\nfrom = \"templates/{path}\"\nto = \"{path}\"\n"));
+        let template = source.join("templates").join(path);
+        fs::create_dir_all(template.parent().unwrap()).unwrap();
+        fs::write(template, contents).unwrap();
+    }
+    fs::write(source.join("mcpctl.toml"), manifest).unwrap();
+}
+
+/// A project at `workspace/dir` declaring `hooks-mcp` (`^1`) from `../hooks-mcp`.
+fn hooks_project(workspace: &Path, dir: &str) -> PathBuf {
+    let project = workspace.join(dir);
+    fs::create_dir_all(&project).unwrap();
+    fs::write(
+        project.join(".mcpctl.toml"),
+        format!("[project]\nname = \"{dir}\"\n\n[[mcp]]\nname = \"hooks-mcp\"\nversion = \"^1\"\nsource = \"../hooks-mcp\"\n"),
+    )
+    .unwrap();
+    project
+}
+
+fn synced(project: &Path, state_home: &Path, arguments: &[&str]) -> String {
+    let output = mcpctl(project, state_home, arguments);
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(output.status.success(), "stdout: {stdout}\nstderr: {}", String::from_utf8_lossy(&output.stderr));
+    stdout
+}
+
+#[test]
+fn sync_after_a_version_bump_brings_unmodified_scaffold_files_up_to_date_and_keeps_edited_ones() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    write_scaffold_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[(".pi/hooks/check.mjs", "check v1"), (".pi/skills/review.md", "review v1")]);
+    let project = hooks_project(&workspace, "service");
+    synced(&project, &state_home, &["sync"]);
+    assert_eq!(fs::read_to_string(project.join(".pi/hooks/check.mjs")).ok().as_deref(), Some("check v1"));
+    fs::write(project.join(".pi/skills/review.md"), "our own review").unwrap();
+    write_scaffold_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[(".pi/hooks/check.mjs", "check v2"), (".pi/skills/review.md", "review v2")]);
+
+    synced(&project, &state_home, &["sync"]);
+
+    assert_eq!(fs::read_to_string(project.join(".pi/hooks/check.mjs")).ok().as_deref(), Some("check v2"));
+    assert_eq!(fs::read_to_string(project.join(".pi/skills/review.md")).ok().as_deref(), Some("our own review"));
+}
+
+#[test]
+fn locked_sync_brings_scaffold_files_up_to_the_locked_versions() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    write_scaffold_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[(".pi/hooks/check.mjs", "check v1")]);
+    let project = hooks_project(&workspace, "service");
+    let teammate = hooks_project(&workspace, "service-teammate");
+    synced(&project, &state_home, &["sync"]);
+    synced(&teammate, &workspace.join("teammate-state"), &["sync"]);
+    write_scaffold_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[(".pi/hooks/check.mjs", "check v2")]);
+    synced(&project, &state_home, &["sync"]);
+    // The teammate pulls the bumped lock.
+    fs::copy(project.join(".mcpctl.lock"), teammate.join(".mcpctl.lock")).unwrap();
+
+    synced(&teammate, &workspace.join("teammate-state"), &["sync", "--locked"]);
+
+    assert_eq!(fs::read_to_string(teammate.join(".pi/hooks/check.mjs")).ok().as_deref(), Some("check v2"));
+}
+
+#[test]
+fn sync_whose_scaffold_fails_still_locks_and_installs_then_fails_naming_sync_and_the_mcp() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    write_scaffold_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
+    let manifest = workspace.join("hooks-mcp/mcpctl.toml");
+    let failing_merge = "\n[[scaffold.files]]\nfrom = \"templates/docs/hooks.md\"\nto = \"settings.json\"\nmerge = \"json\"\n";
+    fs::write(&manifest, fs::read_to_string(&manifest).unwrap() + failing_merge).unwrap();
+    let project = hooks_project(&workspace, "service");
+    fs::write(project.join("settings.json"), "not json").unwrap();
+
+    let output = mcpctl(&project, &state_home, &["sync"]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "a failed scaffold fails sync");
+    assert!(stderr.contains("sync failed for hooks-mcp"), "{stderr}");
+    assert!(project.join(".mcpctl.lock").exists(), "the lock is written before scaffolds are applied");
+    assert!(state_home.join("packages/hooks-mcp/1.0.0").exists(), "the locked version is installed before scaffolds are applied");
+    assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).ok().as_deref(), Some("hooks v1"));
+}
