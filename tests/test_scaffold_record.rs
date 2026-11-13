@@ -137,3 +137,45 @@ fn init_records_files_copied_from_scaffold_dirs_and_keeps_their_permissions() {
         serde_json::json!({ "mcp": "hooks-mcp", "version": "1.0.0", "sha256": sha256("#!/bin/sh\necho review\n") })
     );
 }
+
+#[test]
+fn init_keeps_the_record_of_files_copied_before_a_later_scaffold_step_fails() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
+    let manifest = workspace.join("hooks-mcp/mcpctl.toml");
+    let failing_merge = "\n[[scaffold.files]]\nfrom = \"templates/mcp.json\"\nto = \"settings.json\"\nmerge = \"json\"\n";
+    fs::write(&manifest, fs::read_to_string(&manifest).unwrap() + failing_merge).unwrap();
+    let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
+    fs::write(project.join("settings.json"), "not json").unwrap();
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+
+    let output = mcpctl(&project, &state_home, &["init"]);
+
+    assert!(!output.status.success(), "the failing merge fails init");
+    assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "hooks v1");
+    assert_eq!(
+        record(&project)["files"]["docs/hooks.md"],
+        serde_json::json!({ "mcp": "hooks-mcp", "version": "1.0.0", "sha256": sha256("hooks v1") })
+    );
+}
+
+#[test]
+fn init_refuses_a_malformed_or_unsupported_record_before_copying_anything() {
+    for (contents, complaint) in [("{ not json", "is malformed"), ("{\"version\": 99, \"files\": {}}", "unsupported version 99")] {
+        let workspace = temporary_dir();
+        let state_home = workspace.join("state");
+        write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
+        let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
+        succeeded(&mcpctl(&project, &state_home, &["sync"]));
+        fs::write(project.join(".mcpctl.scaffold.json"), contents).unwrap();
+
+        let output = mcpctl(&project, &state_home, &["init"]);
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{contents}: init succeeded");
+        assert!(stderr.contains(".mcpctl.scaffold.json") && stderr.contains(complaint), "{contents}: {stderr}");
+        assert!(!project.join("docs/hooks.md").exists(), "{contents}: copied despite an unreadable record");
+        assert_eq!(fs::read_to_string(project.join(".mcpctl.scaffold.json")).unwrap(), contents, "record left as found");
+    }
+}
