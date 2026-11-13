@@ -376,3 +376,29 @@ fn init_skips_an_unrecorded_file_matching_no_installed_version_exactly_as_before
     assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "hooks v1, edited");
     assert!(record(&project)["files"].get("docs/hooks.md").is_none(), "{}", record(&project));
 }
+
+#[cfg(unix)]
+#[test]
+fn init_of_a_single_mcp_skips_an_existing_file_without_reading_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
+    let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    fs::create_dir_all(project.join("docs")).unwrap();
+    fs::write(project.join("docs/hooks.md"), "the project's own").unwrap();
+    fs::set_permissions(project.join("docs/hooks.md"), fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read(project.join("docs/hooks.md")).is_ok() {
+        // Running with permission checks bypassed (e.g. as root): an unreadable file can't be made.
+        eprintln!("skipped: permission checks are bypassed for this user");
+        return;
+    }
+
+    let output = mcpctl(&project, &state_home, &["init", "hooks-mcp"]);
+
+    fs::set_permissions(project.join("docs/hooks.md"), fs::Permissions::from_mode(0o644)).unwrap();
+    let stdout = succeeded(&output);
+    assert!(stdout.contains("Skipping docs/hooks.md (already exists)"), "{stdout}");
+    assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "the project's own");
+}

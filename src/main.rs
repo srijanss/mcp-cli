@@ -806,7 +806,8 @@ fn copy_scaffold_tree(source_root: &std::path::Path, target_root: &std::path::Pa
 /// For a file at `destination` (record key `key`) that no MCP has recorded: its sha256 when it is a regular file
 /// byte-identical to `from` in some installed version of this MCP, i.e. a copy made before records were kept.
 fn unrecorded_installed_copy(destination: &std::path::Path, from: &std::path::Path, key: &str, known: &KnownFiles) -> std::io::Result<Option<String>> {
-    if known.claimed.contains(key) || !std::fs::symlink_metadata(destination)?.file_type().is_file() { return Ok(None); }
+    // With no installed version to compare against, the file is never read.
+    if known.installed.is_empty() || known.claimed.contains(key) || !std::fs::symlink_metadata(destination)?.file_type().is_file() { return Ok(None); }
     let sha256 = mcp_cli::scaffold_copy::sha256_file(destination)?;
     for installed in known.installed.iter().map(|source| source.join(from)) {
         match std::fs::symlink_metadata(&installed) {
