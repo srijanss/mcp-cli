@@ -491,7 +491,7 @@ fn scaffold_project(root: &std::path::Path, manifest: &mcp_cli::project::Project
                 Some(scaffold) => {
                     let mut copied = Vec::new();
                     let result = apply_scaffold(&source, &scaffold, root, &mut copied);
-                    record_copied_files(&mut record, root, name, &version, &copied);
+                    record_copied_files(&mut record, name, &version, &copied);
                     result.map(|()| applied.push((name.to_owned(), scaffold)))
                         .map_err(|error| format!("{name}@{version}: {error}"))
                 }
@@ -510,14 +510,13 @@ fn scaffold_project(root: &std::path::Path, manifest: &mcp_cli::project::Project
     (applied, failed)
 }
 
-/// Records each of `copied` (target-relative paths `name@version` just copied into `root`) with its sha256.
-fn record_copied_files(record: &mut mcp_cli::scaffold_record::ScaffoldRecord, root: &std::path::Path, name: &str, version: &str, copied: &[std::path::PathBuf]) {
-    for path in copied {
-        let Ok(bytes) = std::fs::read(root.join(path)) else { continue };
+/// Records each of `copied` (target-relative paths `name@version` just copied, with their sha256).
+fn record_copied_files(record: &mut mcp_cli::scaffold_record::ScaffoldRecord, name: &str, version: &str, copied: &[(std::path::PathBuf, String)]) {
+    for (path, sha256) in copied {
         record.files.insert(record_key(path), mcp_cli::scaffold_record::RecordedFile {
             mcp: name.to_owned(),
             version: version.to_owned(),
-            sha256: mcp_cli::metadata::sha256_hex(&bytes),
+            sha256: sha256.clone(),
         });
     }
 }
@@ -623,9 +622,9 @@ fn installed_scaffold(state_home: &std::path::Path, name: &str, version: &str) -
 }
 
 /// Copies and merges `scaffold` from an installed `source` snapshot into `target`, then reports its hints.
-/// Every file it copies (not merges) is appended to `copied` as a target-relative path, even when a later
-/// step fails.
-fn apply_scaffold(source: &std::path::Path, scaffold: &mcp_cli::manifest::Scaffold, target: &std::path::Path, copied: &mut Vec<std::path::PathBuf>) -> Result<(), String> {
+/// Every file it copies (not merges) is appended to `copied` as a target-relative path with its sha256, even
+/// when a later step fails.
+fn apply_scaffold(source: &std::path::Path, scaffold: &mcp_cli::manifest::Scaffold, target: &std::path::Path, copied: &mut Vec<(std::path::PathBuf, String)>) -> Result<(), String> {
     // `exclude` filters the `dirs` copies only; a file named in `files` is always copied.
     for file in &scaffold.files {
         let destination = target.join(&file.to);
@@ -689,8 +688,8 @@ fn merge_scaffold_file(template: &std::path::Path, destination: &std::path::Path
 }
 
 /// Copies `from` (a file or directory, relative to `source_root`) to `to` under `target_root`, skipping `exclude`d source paths.
-/// Each file copied is appended to `copied` as its target-relative path.
-fn copy_scaffold_tree(source_root: &std::path::Path, target_root: &std::path::Path, from: &std::path::Path, to: &std::path::Path, exclude: &[String], copied: &mut Vec<std::path::PathBuf>) -> std::io::Result<()> {
+/// Each file copied is appended to `copied` as its target-relative path and sha256.
+fn copy_scaffold_tree(source_root: &std::path::Path, target_root: &std::path::Path, from: &std::path::Path, to: &std::path::Path, exclude: &[String], copied: &mut Vec<(std::path::PathBuf, String)>) -> std::io::Result<()> {
     if exclude.iter().any(|excluded| std::path::Path::new(excluded) == from) { return Ok(()); }
     let source = source_root.join(from);
     let destination = target_root.join(to);
@@ -707,11 +706,31 @@ fn copy_scaffold_tree(source_root: &std::path::Path, target_root: &std::path::Pa
             return Ok(());
         }
         if let Some(parent) = destination.parent() { std::fs::create_dir_all(parent)?; }
-        std::fs::copy(&source, &destination)?;
+        let sha256 = copy_hashing(&source, &destination)?;
         println!("Copied {}", to.display());
-        copied.push(to.to_path_buf());
+        copied.push((to.to_path_buf(), sha256));
     }
     Ok(())
+}
+
+/// Copies `source` to a new file at `destination` with the same permissions, returning the sha256 of the
+/// bytes copied. The digest is computed while streaming, so the file is neither re-read nor held in memory.
+fn copy_hashing(source: &std::path::Path, destination: &std::path::Path) -> std::io::Result<String> {
+    use sha2::Digest;
+    use std::io::{Read, Write};
+    let mut reader = std::fs::File::open(source)?;
+    let permissions = reader.metadata()?.permissions();
+    let mut writer = std::fs::OpenOptions::new().write(true).create_new(true).open(destination)?;
+    let mut hasher = sha2::Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 { break; }
+        hasher.update(&buffer[..read]);
+        writer.write_all(&buffer[..read])?;
+    }
+    writer.set_permissions(permissions)?;
+    Ok(hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 fn install_package(project: &str) {

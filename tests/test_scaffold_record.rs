@@ -17,6 +17,7 @@ fn write_package(workspace: &Path, dir: &str, name: &str, version: &str, files: 
     let source = workspace.join(dir);
     let _ = fs::remove_dir_all(&source);
     fs::create_dir_all(source.join("bin")).unwrap();
+    fs::create_dir_all(source.join("templates")).unwrap();
     let mut manifest = format!(
         "name = \"{name}\"\nversion = \"{version}\"\n\n[runtime]\ntype = \"binary\"\n\n[install]\nentrypoint = \"bin/{name}\"\n\n\
          [scaffold]\n\n[[scaffold.files]]\nfrom = \"templates/mcp.json\"\nto = \".mcp.json\"\nmerge = \"json\"\n"
@@ -109,4 +110,30 @@ fn init_never_writes_through_a_symlink_planted_at_the_record_temp_path() {
 
     assert_eq!(fs::read_to_string(&victim).unwrap(), "precious");
     assert!(record(&project)["files"]["docs/hooks.md"].is_object());
+}
+
+#[cfg(unix)]
+#[test]
+fn init_records_files_copied_from_scaffold_dirs_and_keeps_their_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[]);
+    let source = workspace.join("hooks-mcp");
+    fs::create_dir_all(source.join("skills/review")).unwrap();
+    fs::write(source.join("skills/review/run.sh"), "#!/bin/sh\necho review\n").unwrap();
+    fs::set_permissions(source.join("skills/review/run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+    let manifest = fs::read_to_string(source.join("mcpctl.toml")).unwrap().replace("[scaffold]\n", "[scaffold]\ndirs = [\"skills\"]\n");
+    fs::write(source.join("mcpctl.toml"), manifest).unwrap();
+    let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+
+    succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+    let copied = project.join("skills/review/run.sh");
+    assert_eq!(fs::metadata(&copied).unwrap().permissions().mode() & 0o777, 0o755);
+    assert_eq!(
+        record(&project)["files"]["skills/review/run.sh"],
+        serde_json::json!({ "mcp": "hooks-mcp", "version": "1.0.0", "sha256": sha256("#!/bin/sh\necho review\n") })
+    );
 }
