@@ -9,7 +9,12 @@ use sha2::Digest;
 /// returns the sha256 of the bytes copied. On any failure after the destination is created it is removed
 /// again, so a later run doesn't skip a truncated file as already present.
 pub fn copy_new_hashing(reader: &mut impl Read, destination: &Path, permissions: std::fs::Permissions) -> std::io::Result<String> {
-    let mut writer = std::fs::OpenOptions::new().write(true).create_new(true).open(destination)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    // Owner-only until the copy is complete, so a private source is never briefly readable by others.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut writer = options.open(destination)?;
     let copied = stream_hashing(reader, &mut writer).and_then(|sha256| writer.set_permissions(permissions).map(|()| sha256));
     if copied.is_err() {
         drop(writer);

@@ -33,3 +33,33 @@ fn a_copy_that_fails_midway_leaves_no_destination_behind() {
     assert!(result.is_err());
     assert!(!destination.exists(), "a partial copy would be skipped as already present on the next init");
 }
+
+/// Records the destination's mode the first time it is read from, i.e. while the copy is in flight.
+#[cfg(unix)]
+struct ObservesDestination { destination: PathBuf, mode_mid_copy: Option<u32>, done: bool }
+
+#[cfg(unix)]
+impl Read for ObservesDestination {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        use std::os::unix::fs::PermissionsExt;
+        if self.done { return Ok(0); }
+        self.mode_mid_copy = Some(fs::metadata(&self.destination)?.permissions().mode() & 0o777);
+        self.done = true;
+        let private = b"private contents";
+        buffer[..private.len()].copy_from_slice(private);
+        Ok(private.len())
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_private_source_is_never_readable_by_others_while_it_is_being_copied() {
+    use std::os::unix::fs::PermissionsExt;
+    let destination = temporary_dir().join("private-notes.txt");
+    let mut reader = ObservesDestination { destination: destination.clone(), mode_mid_copy: None, done: false };
+
+    mcp_cli::scaffold_copy::copy_new_hashing(&mut reader, &destination, fs::Permissions::from_mode(0o600)).unwrap();
+
+    assert_eq!(reader.mode_mid_copy.unwrap() & 0o077, 0, "group/other could read the copy before its permissions were applied");
+    assert_eq!(fs::metadata(&destination).unwrap().permissions().mode() & 0o777, 0o600);
+}
