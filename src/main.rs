@@ -482,14 +482,19 @@ fn scaffold_project(root: &std::path::Path, manifest: &mcp_cli::project::Project
         Ok((_, source, Some(scaffold))) => Some((*name, source.as_path(), scaffold)),
         _ => None,
     }));
+    let mut record = mcp_cli::scaffold_record::load(root).unwrap_or_else(|error| fatal(error));
     let (mut applied, mut failed) = (Vec::new(), Vec::new());
     for (name, resolved) in resolved {
         let initialized = resolved.and_then(|(version, source, scaffold)| {
             println!("Initializing {name}@{version}");
             match scaffold {
-                Some(scaffold) => apply_scaffold(&source, &scaffold, root)
-                    .map(|()| applied.push((name.to_owned(), scaffold)))
-                    .map_err(|error| format!("{name}@{version}: {error}")),
+                Some(scaffold) => {
+                    let mut copied = Vec::new();
+                    let result = apply_scaffold(&source, &scaffold, root, &mut copied);
+                    record_copied_files(&mut record, root, name, &version, &copied);
+                    result.map(|()| applied.push((name.to_owned(), scaffold)))
+                        .map_err(|error| format!("{name}@{version}: {error}"))
+                }
                 None => {
                     println!("Skipping {name}@{version} (no [scaffold])");
                     Ok(())
@@ -501,7 +506,25 @@ fn scaffold_project(root: &std::path::Path, manifest: &mcp_cli::project::Project
             failed.push(name.to_owned());
         }
     }
+    mcp_cli::scaffold_record::save_if_changed(root, &record).unwrap_or_else(|error| fatal(error));
     (applied, failed)
+}
+
+/// Records each of `copied` (target-relative paths `name@version` just copied into `root`) with its sha256.
+fn record_copied_files(record: &mut mcp_cli::scaffold_record::ScaffoldRecord, root: &std::path::Path, name: &str, version: &str, copied: &[std::path::PathBuf]) {
+    for path in copied {
+        let Ok(bytes) = std::fs::read(root.join(path)) else { continue };
+        record.files.insert(record_key(path), mcp_cli::scaffold_record::RecordedFile {
+            mcp: name.to_owned(),
+            version: version.to_owned(),
+            sha256: mcp_cli::metadata::sha256_hex(&bytes),
+        });
+    }
+}
+
+/// A target-relative path as the record keys it: `/`-separated on every platform.
+fn record_key(path: &std::path::Path) -> String {
+    path.components().map(|component| component.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/")
 }
 
 /// Warns about each tool `name`'s scaffold requires that is not on `PATH`.
@@ -585,7 +608,7 @@ fn init_package(selector: &str, target: Option<&std::path::Path>) {
     let (source, scaffold) = installed_scaffold(&state_home, name, &version).unwrap_or_else(|error| fatal(error));
     let scaffold = scaffold.unwrap_or_else(|| fatal(format!("{name}@{version} does not ship a scaffold")));
     let target = target.map(std::path::Path::to_path_buf).unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|error| fatal(error.to_string())));
-    apply_scaffold(&source, &scaffold, &target).unwrap_or_else(|error| fatal(error));
+    apply_scaffold(&source, &scaffold, &target, &mut Vec::new()).unwrap_or_else(|error| fatal(error));
     warn_missing_requirements(name, &scaffold);
 }
 
@@ -600,7 +623,9 @@ fn installed_scaffold(state_home: &std::path::Path, name: &str, version: &str) -
 }
 
 /// Copies and merges `scaffold` from an installed `source` snapshot into `target`, then reports its hints.
-fn apply_scaffold(source: &std::path::Path, scaffold: &mcp_cli::manifest::Scaffold, target: &std::path::Path) -> Result<(), String> {
+/// Every file it copies (not merges) is appended to `copied` as a target-relative path, even when a later
+/// step fails.
+fn apply_scaffold(source: &std::path::Path, scaffold: &mcp_cli::manifest::Scaffold, target: &std::path::Path, copied: &mut Vec<std::path::PathBuf>) -> Result<(), String> {
     // `exclude` filters the `dirs` copies only; a file named in `files` is always copied.
     for file in &scaffold.files {
         let destination = target.join(&file.to);
@@ -609,12 +634,15 @@ fn apply_scaffold(source: &std::path::Path, scaffold: &mcp_cli::manifest::Scaffo
                 .map_err(|error| format!("cannot merge {}: {error}", file.to))?;
             continue;
         }
-        copy_scaffold_tree(source, target, std::path::Path::new(&file.from), std::path::Path::new(&file.to), &[])
+        // A file with a merge mode is the project's to extend, so it is never recorded even when copied fresh.
+        let mut unrecorded = Vec::new();
+        let copies = if file.merge.is_some() { &mut unrecorded } else { &mut *copied };
+        copy_scaffold_tree(source, target, std::path::Path::new(&file.from), std::path::Path::new(&file.to), &[], copies)
             .map_err(|error| format!("cannot copy {}: {error}", file.from))?;
     }
     for dir in &scaffold.dirs {
         let relative = std::path::Path::new(dir);
-        copy_scaffold_tree(source, target, relative, relative, &scaffold.exclude)
+        copy_scaffold_tree(source, target, relative, relative, &scaffold.exclude, copied)
             .map_err(|error| format!("cannot copy {dir}: {error}"))?;
     }
     // A hint applies when it has no marker file, or its marker file exists in the target.
@@ -661,7 +689,8 @@ fn merge_scaffold_file(template: &std::path::Path, destination: &std::path::Path
 }
 
 /// Copies `from` (a file or directory, relative to `source_root`) to `to` under `target_root`, skipping `exclude`d source paths.
-fn copy_scaffold_tree(source_root: &std::path::Path, target_root: &std::path::Path, from: &std::path::Path, to: &std::path::Path, exclude: &[String]) -> std::io::Result<()> {
+/// Each file copied is appended to `copied` as its target-relative path.
+fn copy_scaffold_tree(source_root: &std::path::Path, target_root: &std::path::Path, from: &std::path::Path, to: &std::path::Path, exclude: &[String], copied: &mut Vec<std::path::PathBuf>) -> std::io::Result<()> {
     if exclude.iter().any(|excluded| std::path::Path::new(excluded) == from) { return Ok(()); }
     let source = source_root.join(from);
     let destination = target_root.join(to);
@@ -669,7 +698,7 @@ fn copy_scaffold_tree(source_root: &std::path::Path, target_root: &std::path::Pa
         std::fs::create_dir_all(&destination)?;
         for entry in std::fs::read_dir(&source)? {
             let name = entry?.file_name();
-            copy_scaffold_tree(source_root, target_root, &from.join(&name), &to.join(&name), exclude)?;
+            copy_scaffold_tree(source_root, target_root, &from.join(&name), &to.join(&name), exclude, copied)?;
         }
     } else if source.is_file() {
         // Never overwrite a file the target project already has.
@@ -680,6 +709,7 @@ fn copy_scaffold_tree(source_root: &std::path::Path, target_root: &std::path::Pa
         if let Some(parent) = destination.parent() { std::fs::create_dir_all(parent)?; }
         std::fs::copy(&source, &destination)?;
         println!("Copied {}", to.display());
+        copied.push(to.to_path_buf());
     }
     Ok(())
 }
