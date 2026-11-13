@@ -713,24 +713,11 @@ fn copy_scaffold_tree(source_root: &std::path::Path, target_root: &std::path::Pa
     Ok(())
 }
 
-/// Copies `source` to a new file at `destination` with the same permissions, returning the sha256 of the
-/// bytes copied. The digest is computed while streaming, so the file is neither re-read nor held in memory.
+/// Copies `source` to a new file at `destination` with the same permissions, returning its sha256.
 fn copy_hashing(source: &std::path::Path, destination: &std::path::Path) -> std::io::Result<String> {
-    use sha2::Digest;
-    use std::io::{Read, Write};
     let mut reader = std::fs::File::open(source)?;
     let permissions = reader.metadata()?.permissions();
-    let mut writer = std::fs::OpenOptions::new().write(true).create_new(true).open(destination)?;
-    let mut hasher = sha2::Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let read = reader.read(&mut buffer)?;
-        if read == 0 { break; }
-        hasher.update(&buffer[..read]);
-        writer.write_all(&buffer[..read])?;
-    }
-    writer.set_permissions(permissions)?;
-    Ok(hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
+    mcp_cli::scaffold_copy::copy_new_hashing(&mut reader, destination, permissions)
 }
 
 fn install_package(project: &str) {

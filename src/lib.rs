@@ -10,4 +10,5 @@ pub mod merge;
 pub mod metadata;
 pub mod registry;
 pub mod run;
+pub mod scaffold_copy;
 pub mod scaffold_record;
