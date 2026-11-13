@@ -257,6 +257,12 @@ fn init_keeps_recording_files_when_the_new_scaffold_fails_before_it_has_seen_the
     assert!(!output.status.success(), "the failing merge fails init");
     assert!(!String::from_utf8_lossy(&output.stdout).contains("no longer shipped"));
     assert_eq!(record(&project)["files"]["docs/legacy.md"]["version"], "1.0.0");
+    // The copy that succeeded before the failure is on disk, so it is recorded at the new version.
+    assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "hooks v2");
+    assert_eq!(
+        record(&project)["files"]["docs/hooks.md"],
+        serde_json::json!({ "mcp": "hooks-mcp", "version": "1.1.0", "sha256": sha256("hooks v2") })
+    );
 }
 
 #[test]
