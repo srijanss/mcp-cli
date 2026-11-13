@@ -63,3 +63,38 @@ fn a_private_source_is_never_readable_by_others_while_it_is_being_copied() {
     assert_eq!(reader.mode_mid_copy.unwrap() & 0o077, 0, "group/other could read the copy before its permissions were applied");
     assert_eq!(fs::metadata(&destination).unwrap().permissions().mode() & 0o777, 0o600);
 }
+
+fn entries(directory: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(directory).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn a_replacement_that_fails_midway_keeps_the_old_file_and_leaves_no_temporary_behind() {
+    let directory = temporary_dir();
+    let destination = directory.join("hooks.md");
+    fs::write(&destination, "hooks v1").unwrap();
+    let permissions = fs::metadata(&destination).unwrap().permissions();
+
+    let result = mcp_cli::scaffold_copy::replace_with_hashing(&mut FailsAfterFirstChunk { chunk: Some(b"hooks v2, half") }, &destination, permissions);
+
+    assert!(result.is_err());
+    assert_eq!(fs::read_to_string(&destination).unwrap(), "hooks v1");
+    assert_eq!(entries(&directory), ["hooks.md"]);
+}
+
+#[test]
+fn a_replacement_whose_rename_fails_keeps_the_old_destination_and_leaves_no_temporary_behind() {
+    let directory = temporary_dir();
+    // A non-empty directory where the file should go: the copy succeeds, renaming it into place fails.
+    let destination = directory.join("hooks.md");
+    fs::create_dir_all(destination.join("kept")).unwrap();
+    let permissions = fs::metadata(&directory).unwrap().permissions();
+
+    let result = mcp_cli::scaffold_copy::replace_with_hashing(&mut &b"hooks v2"[..], &destination, permissions);
+
+    assert!(result.is_err());
+    assert!(destination.join("kept").is_dir());
+    assert_eq!(entries(&directory), ["hooks.md"]);
+}

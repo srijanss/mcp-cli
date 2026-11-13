@@ -46,6 +46,12 @@ pub fn sha256_file(path: &Path) -> std::io::Result<String> {
 pub fn replace_hashing(source: &Path, destination: &Path) -> std::io::Result<String> {
     let mut reader = std::fs::File::open(source)?;
     let permissions = reader.metadata()?.permissions();
+    replace_with_hashing(&mut reader, destination, permissions)
+}
+
+/// Replaces the file at `destination` with the bytes of `reader` and `permissions`, returning their sha256. On
+/// any failure `destination` is left as it was and no temporary copy remains.
+pub fn replace_with_hashing(reader: &mut impl Read, destination: &Path, permissions: std::fs::Permissions) -> std::io::Result<String> {
     // A fresh sibling name that nothing occupies: an existing file at a candidate name (the project's own, or a
     // planted symlink) is never written through or removed, just passed over.
     let mut attempt = 0u32;
@@ -54,7 +60,7 @@ pub fn replace_hashing(source: &Path, destination: &Path) -> std::io::Result<Str
         name.push(destination.file_name().unwrap_or_default());
         name.push(format!(".mcpctl-new-{}-{attempt}", std::process::id()));
         let partial = destination.with_file_name(name);
-        match copy_new_hashing(&mut reader, &partial, permissions.clone()) {
+        match copy_new_hashing(reader, &partial, permissions.clone()) {
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && attempt < 100 => attempt += 1,
             result => break (partial, result?),
         }
