@@ -402,3 +402,30 @@ fn init_of_a_single_mcp_skips_an_existing_file_without_reading_it() {
     assert!(stdout.contains("Skipping docs/hooks.md (already exists)"), "{stdout}");
     assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "the project's own");
 }
+
+#[test]
+fn init_never_adopts_a_project_file_matching_a_source_file_an_installed_version_did_not_copy_there() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    // 1.0.0 has templates/docs/hooks.md in its source, and copies a templates dir with it excluded, but its
+    // scaffold never copies that file to docs/hooks.md.
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[]);
+    let source = workspace.join("hooks-mcp");
+    fs::create_dir_all(source.join("templates/docs")).unwrap();
+    fs::write(source.join("templates/docs/hooks.md"), "the project's own").unwrap();
+    let manifest = fs::read_to_string(source.join("mcpctl.toml")).unwrap()
+        .replace("[scaffold]\n", "[scaffold]\ndirs = [\"templates\"]\nexclude = [\"templates/docs\"]\n");
+    fs::write(source.join("mcpctl.toml"), manifest).unwrap();
+    let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    fs::create_dir_all(project.join("docs")).unwrap();
+    fs::write(project.join("docs/hooks.md"), "the project's own").unwrap();
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+
+    let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+    assert!(stdout.contains("Skipping docs/hooks.md (already exists)"), "{stdout}");
+    assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "the project's own");
+    assert!(record(&project)["files"].get("docs/hooks.md").is_none(), "{}", record(&project));
+}

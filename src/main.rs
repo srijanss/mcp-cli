@@ -496,7 +496,7 @@ fn scaffold_project(root: &std::path::Path, manifest: &mcp_cli::project::Project
                 Some(scaffold) => {
                     let mut copies = ScaffoldCopies::default();
                     // A file no MCP has recorded may still be one an installed version copied before records were kept.
-                    let installed = installed_sources(&state_home, name).map_err(|error| format!("{name}@{version}: {error}"))?;
+                    let installed = installed_scaffolds(&state_home, name).map_err(|error| format!("{name}@{version}: {error}"))?;
                     let claimed: std::collections::BTreeSet<String> = record.files.iter().filter(|(_, entry)| entry.mcp != name).map(|(path, _)| path.clone()).collect();
                     let known = KnownFiles { recorded: &owned, claimed: &claimed, installed: &installed };
                     let result = apply_scaffold(&source, &scaffold, root, &known, &mut copies);
@@ -660,11 +660,18 @@ fn installed_scaffold(state_home: &std::path::Path, name: &str, version: &str) -
     Ok((source, manifest.scaffold))
 }
 
-/// The source snapshot of every installed version of `name`.
-fn installed_sources(state_home: &std::path::Path, name: &str) -> Result<Vec<std::path::PathBuf>, String> {
-    let versions = state_home.join("packages").join(name);
-    let entries = std::fs::read_dir(&versions).map_err(|error| format!("cannot list installed versions: {error}"))?;
-    entries.map(|entry| entry.map(|entry| entry.path().join("source")).map_err(|error| format!("cannot list installed versions: {error}"))).collect()
+/// The source snapshot and scaffold of every installed version of `name` that ships one.
+fn installed_scaffolds(state_home: &std::path::Path, name: &str) -> Result<Vec<(std::path::PathBuf, mcp_cli::manifest::Scaffold)>, String> {
+    let versions = std::fs::read_dir(state_home.join("packages").join(name)).map_err(|error| format!("cannot list installed versions: {error}"))?;
+    let mut scaffolds = Vec::new();
+    for entry in versions {
+        let version = entry.map_err(|error| format!("cannot list installed versions: {error}"))?.file_name();
+        let version = version.to_string_lossy();
+        if let (source, Some(scaffold)) = installed_scaffold(state_home, name, &version).map_err(|error| format!("{name}@{version}: {error}"))? {
+            scaffolds.push((source, scaffold));
+        }
+    }
+    Ok(scaffolds)
 }
 
 /// What is known about files already in a project when applying one MCP's scaffold.
@@ -673,8 +680,8 @@ struct KnownFiles<'a> {
     recorded: &'a mcp_cli::scaffold_record::ScaffoldRecord,
     /// Paths recorded as copied by another MCP.
     claimed: &'a std::collections::BTreeSet<String>,
-    /// The source snapshot of every installed version of this MCP.
-    installed: &'a [std::path::PathBuf],
+    /// The source snapshot and scaffold of every installed version of this MCP.
+    installed: &'a [(std::path::PathBuf, mcp_cli::manifest::Scaffold)],
 }
 
 /// What applying a scaffold copied, and what it ships.
@@ -773,7 +780,7 @@ fn copy_scaffold_tree(source_root: &std::path::Path, target_root: &std::path::Pa
             let key = record_key(to);
             let copied_sha256 = match known.recorded.files.get(&key) {
                 Some(entry) => entry.sha256.clone(),
-                None => match unrecorded_installed_copy(&destination, from, &key, known)? {
+                None => match unrecorded_installed_copy(&destination, &key, known)? {
                     Some(sha256) => sha256,
                     None => {
                         println!("Skipping {} (already exists)", to.display());
@@ -804,18 +811,49 @@ fn copy_scaffold_tree(source_root: &std::path::Path, target_root: &std::path::Pa
 }
 
 /// For a file at `destination` (record key `key`) that no MCP has recorded: its sha256 when it is a regular file
-/// byte-identical to `from` in some installed version of this MCP, i.e. a copy made before records were kept.
-fn unrecorded_installed_copy(destination: &std::path::Path, from: &std::path::Path, key: &str, known: &KnownFiles) -> std::io::Result<Option<String>> {
-    // With no installed version to compare against, the file is never read.
-    if known.installed.is_empty() || known.claimed.contains(key) || !std::fs::symlink_metadata(destination)?.file_type().is_file() { return Ok(None); }
+/// byte-identical to the file some installed version of this MCP copies (not merges) there, i.e. a copy made
+/// before records were kept.
+fn unrecorded_installed_copy(destination: &std::path::Path, key: &str, known: &KnownFiles) -> std::io::Result<Option<String>> {
+    if known.claimed.contains(key) || !std::fs::symlink_metadata(destination)?.file_type().is_file() { return Ok(None); }
+    let mut candidates = Vec::new();
+    for (source, scaffold) in known.installed {
+        candidates.extend(scaffold_copy_source(source, scaffold, std::path::Path::new(key))?);
+    }
+    // With no installed version that copies a file here, the file is never read.
+    if candidates.is_empty() { return Ok(None); }
     let sha256 = mcp_cli::scaffold_copy::sha256_file(destination)?;
-    for installed in known.installed.iter().map(|source| source.join(from)) {
-        match std::fs::symlink_metadata(&installed) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error),
-            Ok(metadata) if !metadata.file_type().is_file() => continue,
-            Ok(_) => if mcp_cli::scaffold_copy::sha256_file(&installed)? == sha256 { return Ok(Some(sha256)); },
+    for candidate in candidates {
+        if mcp_cli::scaffold_copy::sha256_file(&candidate)? == sha256 { return Ok(Some(sha256)); }
+    }
+    Ok(None)
+}
+
+/// The regular file in `source` that applying `scaffold` copies to the target-relative path `to`, if any. A
+/// path a merge entry fills is the project's to extend, so it has none. `files` are applied before `dirs`, and
+/// the first to reach a path fills it.
+fn scaffold_copy_source(source: &std::path::Path, scaffold: &mcp_cli::manifest::Scaffold, to: &std::path::Path) -> std::io::Result<Option<std::path::PathBuf>> {
+    let regular_file = |path: std::path::PathBuf| match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => Ok(metadata.file_type().is_file().then_some(path)),
+        Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => Ok(None),
+        Err(error) => Err(error),
+    };
+    // The source path under `from` that `to` is reached by when `to_root` is copied from `from`.
+    let beneath = |from: &str, to_root: &str| to.strip_prefix(to_root).ok().map(|rest| {
+        if rest.as_os_str().is_empty() { std::path::Path::new(from).to_path_buf() } else { std::path::Path::new(from).join(rest) }
+    });
+    for file in &scaffold.files {
+        let Some(from) = beneath(&file.from, &file.to) else { continue };
+        if let Some(path) = regular_file(source.join(from))? {
+            return Ok(file.merge.is_none().then_some(path));
         }
+    }
+    for dir in &scaffold.dirs {
+        let Some(from) = beneath(dir, dir) else { continue };
+        // `exclude` names a source path at any level of the walk from `dir` down to the file itself.
+        let excluded = from.ancestors().take_while(|ancestor| ancestor.starts_with(dir))
+            .any(|ancestor| scaffold.exclude.iter().any(|excluded| std::path::Path::new(excluded) == ancestor));
+        if excluded { continue; }
+        if let Some(path) = regular_file(source.join(from))? { return Ok(Some(path)); }
     }
     Ok(None)
 }
