@@ -116,3 +116,21 @@ fn init_leaves_a_locally_modified_file_alone_and_names_the_new_version_to_merge_
         serde_json::json!({ "mcp": "hooks-mcp", "version": "1.0.0", "sha256": sha256("hooks v1") })
     );
 }
+
+#[test]
+fn updating_a_file_never_touches_a_project_file_named_like_its_temporary_copy() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
+    let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    succeeded(&mcpctl(&project, &state_home, &["init"]));
+    fs::write(project.join("docs/hooks.md.mcpctl-new"), "my own notes").unwrap();
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+
+    succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+    assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "hooks v2");
+    assert_eq!(fs::read_to_string(project.join("docs/hooks.md.mcpctl-new")).unwrap(), "my own notes");
+}

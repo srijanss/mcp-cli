@@ -41,20 +41,24 @@ pub fn sha256_file(path: &Path) -> std::io::Result<String> {
 }
 
 /// Replaces the file at `destination` with a copy of `source` (keeping `source`'s permissions), returning the
-/// copy's sha256. The copy is written beside `destination` and renamed over it, so an interrupted update leaves
-/// the old file in place rather than a truncated one.
+/// copy's sha256. The copy is written to a fresh hidden sibling of `destination` and renamed over it, so an
+/// interrupted update leaves the old file in place rather than a truncated one.
 pub fn replace_hashing(source: &Path, destination: &Path) -> std::io::Result<String> {
     let mut reader = std::fs::File::open(source)?;
     let permissions = reader.metadata()?.permissions();
-    let mut name = destination.file_name().unwrap_or_default().to_os_string();
-    name.push(".mcpctl-new");
-    let partial = destination.with_file_name(name);
-    // A leftover from an interrupted run (or anything planted there) is unlinked, never written through.
-    match std::fs::remove_file(&partial) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
-        _ => {}
-    }
-    let sha256 = copy_new_hashing(&mut reader, &partial, permissions)?;
+    // A fresh sibling name that nothing occupies: an existing file at a candidate name (the project's own, or a
+    // planted symlink) is never written through or removed, just passed over.
+    let mut attempt = 0u32;
+    let (partial, sha256) = loop {
+        let mut name = std::ffi::OsString::from(".");
+        name.push(destination.file_name().unwrap_or_default());
+        name.push(format!(".mcpctl-new-{}-{attempt}", std::process::id()));
+        let partial = destination.with_file_name(name);
+        match copy_new_hashing(&mut reader, &partial, permissions.clone()) {
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && attempt < 100 => attempt += 1,
+            result => break (partial, result?),
+        }
+    };
     std::fs::rename(&partial, destination).inspect_err(|_| { let _ = std::fs::remove_file(&partial); })?;
     Ok(sha256)
 }
