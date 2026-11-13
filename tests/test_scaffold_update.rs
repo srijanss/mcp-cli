@@ -677,3 +677,29 @@ fn a_non_owner_never_recreates_a_shared_path_the_project_deleted() {
         serde_json::json!({ "mcp": "hooks-mcp", "version": "1.0.0", "sha256": sha256("hooks v1") })
     );
 }
+
+#[test]
+fn a_shared_path_owner_named_in_the_record_is_never_looked_up_outside_the_installed_packages() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    let project = project_with_late_second_shipper(&workspace, &state_home, "other v1");
+    // A record naming an owner whose name walks out of the state home, where a manifest ships other-mcp's copy.
+    let planted = workspace.join("planted/x/source");
+    fs::create_dir_all(planted.join("templates/docs")).unwrap();
+    fs::write(planted.join("templates/docs/hooks.md"), "other v1").unwrap();
+    fs::write(
+        planted.join("mcpctl.toml"),
+        "name = \"planted\"\nversion = \"1.0.0\"\n\n[runtime]\ntype = \"binary\"\n\n[install]\nentrypoint = \"bin/planted\"\n\n\
+         [scaffold]\n\n[[scaffold.files]]\nfrom = \"templates/docs/hooks.md\"\nto = \"docs/hooks.md\"\n",
+    ).unwrap();
+    let mut recorded = record(&project);
+    recorded["files"]["docs/hooks.md"]["mcp"] = serde_json::json!("../../planted");
+    recorded["files"]["docs/hooks.md"]["version"] = serde_json::json!("x");
+    fs::write(project.join(".mcpctl.scaffold.json"), serde_json::to_string(&recorded).unwrap()).unwrap();
+
+    let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+    // Compared with the recorded copy ("hooks v1"), not the planted one.
+    assert!(stdout.contains("Skipping docs/hooks.md (conflict: other-mcp@1.0.0 ships a different copy; keeping ../../planted@x's, which copied it first)"), "{stdout}");
+    assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "hooks v1");
+}
