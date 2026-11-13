@@ -712,7 +712,9 @@ fn copy_scaffold_tree(source_root: &std::path::Path, target_root: &std::path::Pa
                 println!("Skipping {} (already exists)", to.display());
                 return Ok(());
             };
-            if mcp_cli::scaffold_copy::sha256_file(&destination)? != entry.sha256 {
+            // A path the project turned into a symlink (or anything but a regular file) is a local change too.
+            let still_a_file = std::fs::symlink_metadata(&destination)?.file_type().is_file();
+            if !still_a_file || mcp_cli::scaffold_copy::sha256_file(&destination)? != entry.sha256 {
                 println!("Skipping {} (locally modified; merge {} by hand)", to.display(), source.display());
                 return Ok(());
             }
