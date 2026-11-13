@@ -318,3 +318,61 @@ fn init_fails_and_keeps_recording_a_file_no_longer_shipped_that_it_cannot_inspec
         serde_json::json!({ "mcp": "hooks-mcp", "version": "1.0.0", "sha256": sha256("legacy v1") })
     );
 }
+
+/// A project scaffolded by `hooks-mcp@1.0.0` (shipping `docs/hooks.md` as "hooks v1") before hashes were
+/// recorded, with 1.1.0 (shipping `hooks_v2`) installed since.
+fn pre_record_project_upgraded_to(workspace: &Path, state_home: &Path, hooks_v2: &str) -> PathBuf {
+    write_package(workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
+    let project = write_project(workspace, &[("hooks-mcp", "^1")]);
+    succeeded(&mcpctl(&project, state_home, &["sync"]));
+    succeeded(&mcpctl(&project, state_home, &["init"]));
+    fs::remove_file(project.join(".mcpctl.scaffold.json")).unwrap();
+    write_package(workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", hooks_v2)]);
+    succeeded(&mcpctl(&project, state_home, &["sync"]));
+    project
+}
+
+#[test]
+fn init_updates_and_records_an_unrecorded_file_identical_to_an_earlier_installed_version() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    let project = pre_record_project_upgraded_to(&workspace, &state_home, "hooks v2");
+
+    let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+    assert!(stdout.contains("Updated docs/hooks.md"), "{stdout}");
+    assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "hooks v2");
+    assert_eq!(
+        record(&project)["files"]["docs/hooks.md"],
+        serde_json::json!({ "mcp": "hooks-mcp", "version": "1.1.0", "sha256": sha256("hooks v2") })
+    );
+}
+
+#[test]
+fn init_records_an_unrecorded_file_already_identical_to_the_current_version_without_rewriting_it() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    let project = pre_record_project_upgraded_to(&workspace, &state_home, "hooks v1");
+
+    let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+    assert!(!stdout.contains("Updated docs/hooks.md") && !stdout.contains("Skipping docs/hooks.md"), "{stdout}");
+    assert_eq!(
+        record(&project)["files"]["docs/hooks.md"],
+        serde_json::json!({ "mcp": "hooks-mcp", "version": "1.1.0", "sha256": sha256("hooks v1") })
+    );
+}
+
+#[test]
+fn init_skips_an_unrecorded_file_matching_no_installed_version_exactly_as_before() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    let project = pre_record_project_upgraded_to(&workspace, &state_home, "hooks v2");
+    fs::write(project.join("docs/hooks.md"), "hooks v1, edited").unwrap();
+
+    let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+    assert!(stdout.contains("Skipping docs/hooks.md (already exists)"), "{stdout}");
+    assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "hooks v1, edited");
+    assert!(record(&project)["files"].get("docs/hooks.md").is_none(), "{}", record(&project));
+}
