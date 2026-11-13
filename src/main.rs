@@ -487,14 +487,14 @@ fn scaffold_project(root: &std::path::Path, manifest: &mcp_cli::project::Project
     for (name, resolved) in resolved {
         let initialized = resolved.and_then(|(version, source, scaffold)| {
             println!("Initializing {name}@{version}");
+            // An MCP only ever updates files it copied itself, so two MCPs shipping a path never take turns.
+            let owned = mcp_cli::scaffold_record::ScaffoldRecord {
+                files: record.files.iter().filter(|(_, entry)| entry.mcp == name).map(|(path, entry)| (path.clone(), entry.clone())).collect(),
+                ..Default::default()
+            };
             match scaffold {
                 Some(scaffold) => {
                     let mut copies = ScaffoldCopies::default();
-                    // An MCP only ever updates files it copied itself, so two MCPs shipping a path never take turns.
-                    let owned = mcp_cli::scaffold_record::ScaffoldRecord {
-                        files: record.files.iter().filter(|(_, entry)| entry.mcp == name).map(|(path, entry)| (path.clone(), entry.clone())).collect(),
-                        ..Default::default()
-                    };
                     let result = apply_scaffold(&source, &scaffold, root, &owned, &mut copies);
                     record_copied_files(&mut record, name, &version, &copies.copied);
                     // Only a scaffold applied in full tells which recorded files it no longer ships.
@@ -504,7 +504,9 @@ fn scaffold_project(root: &std::path::Path, manifest: &mcp_cli::project::Project
                 }
                 None => {
                     println!("Skipping {name}@{version} (no [scaffold])");
-                    Ok(())
+                    // A version that ships no scaffold at all no longer ships any file its predecessors copied.
+                    forget_dropped_files(&mut record, root, name, &version, &owned, &Default::default())
+                        .map_err(|error| format!("{name}@{version}: {error}"))
                 }
             }
         });

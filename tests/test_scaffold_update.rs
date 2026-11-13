@@ -258,3 +258,24 @@ fn init_keeps_recording_files_when_the_new_scaffold_fails_before_it_has_seen_the
     assert!(!String::from_utf8_lossy(&output.stdout).contains("no longer shipped"));
     assert_eq!(record(&project)["files"]["docs/legacy.md"]["version"], "1.0.0");
 }
+
+#[test]
+fn init_reports_every_recorded_file_when_a_new_version_drops_its_scaffold_entirely() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
+    let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    succeeded(&mcpctl(&project, &state_home, &["init"]));
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[]);
+    let manifest = workspace.join("hooks-mcp/mcpctl.toml");
+    let without_scaffold = fs::read_to_string(&manifest).unwrap().split("[scaffold]").next().unwrap().to_owned();
+    fs::write(&manifest, without_scaffold).unwrap();
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+
+    let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+    assert!(stdout.contains("docs/hooks.md is no longer shipped by hooks-mcp@1.1.0 and is unchanged; it is safe to delete"), "{stdout}");
+    assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "hooks v1");
+    assert!(record(&project)["files"].get("docs/hooks.md").is_none(), "{}", record(&project));
+}
