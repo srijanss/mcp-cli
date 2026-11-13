@@ -511,3 +511,46 @@ fn init_never_adopts_an_unrecorded_dangling_symlink() {
     assert!(!target.exists(), "nothing was written through the dangling symlink");
     assert!(record(&project)["files"].get("docs/hooks.md").is_none(), "{}", record(&project));
 }
+
+/// Breaks the installed manifest of `hooks-mcp@1.0.0` and drops an unrelated entry beside its versions.
+fn break_inactive_snapshot(state_home: &Path) {
+    let package = state_home.join("packages/hooks-mcp");
+    fs::write(package.join("1.0.0/source/mcpctl.toml"), "not a manifest [").unwrap();
+    fs::write(package.join("notes.txt"), "not a version").unwrap();
+}
+
+#[test]
+fn init_of_a_fresh_project_ignores_unreadable_inactive_snapshots() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1")]);
+    let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    break_inactive_snapshot(&state_home);
+
+    let output = mcpctl(&project, &state_home, &["init"]);
+
+    let stdout = succeeded(&output);
+    assert!(stdout.contains("Copied docs/hooks.md"), "{stdout}");
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("1.0.0"), "the inactive snapshot is never read");
+    assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "hooks v2");
+}
+
+#[test]
+fn init_skips_an_unreadable_inactive_snapshot_with_a_warning_when_looking_for_pre_record_copies() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    let project = pre_record_project_upgraded_to(&workspace, &state_home, "hooks v2");
+    break_inactive_snapshot(&state_home);
+
+    let output = mcpctl(&project, &state_home, &["init"]);
+
+    let stdout = succeeded(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("Skipping docs/hooks.md (already exists)"), "{stdout}");
+    assert!(stderr.contains("hooks-mcp@1.0.0") && stderr.contains("cannot read installed manifest"), "{stderr}");
+    assert!(!stderr.contains("notes.txt"), "{stderr}");
+    assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "hooks v1");
+}

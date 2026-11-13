@@ -496,7 +496,8 @@ fn scaffold_project(root: &std::path::Path, manifest: &mcp_cli::project::Project
                 Some(scaffold) => {
                     let mut copies = ScaffoldCopies::default();
                     // A file no MCP has recorded may still be one an installed version copied before records were kept.
-                    let installed = installed_scaffolds(&state_home, name).map_err(|error| format!("{name}@{version}: {error}"))?;
+                    let versions = registry.packages.get(name).map(|package| package.versions.iter().map(|installed| installed.version.clone()).collect()).unwrap_or_default();
+                    let installed = InstalledScaffolds::new(&state_home, name, versions);
                     let claimed: std::collections::BTreeSet<String> = record.files.iter().filter(|(_, entry)| entry.mcp != name).map(|(path, _)| path.clone()).collect();
                     let known = KnownFiles { recorded: &owned, claimed: &claimed, installed: &installed };
                     let result = apply_scaffold(&source, &scaffold, root, &known, &mut copies);
@@ -645,7 +646,7 @@ fn init_package(selector: &str, target: Option<&std::path::Path>) {
     let (source, scaffold) = installed_scaffold(&state_home, name, &version).unwrap_or_else(|error| fatal(error));
     let scaffold = scaffold.unwrap_or_else(|| fatal(format!("{name}@{version} does not ship a scaffold")));
     let target = target.map(std::path::Path::to_path_buf).unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|error| fatal(error.to_string())));
-    let nothing_known = KnownFiles { recorded: &Default::default(), claimed: &Default::default(), installed: &[] };
+    let nothing_known = KnownFiles { recorded: &Default::default(), claimed: &Default::default(), installed: &InstalledScaffolds::none() };
     apply_scaffold(&source, &scaffold, &target, &nothing_known, &mut ScaffoldCopies::default()).unwrap_or_else(|error| fatal(error));
     warn_missing_requirements(name, &scaffold);
 }
@@ -660,18 +661,33 @@ fn installed_scaffold(state_home: &std::path::Path, name: &str, version: &str) -
     Ok((source, manifest.scaffold))
 }
 
-/// The source snapshot and scaffold of every installed version of `name` that ships one.
-fn installed_scaffolds(state_home: &std::path::Path, name: &str) -> Result<Vec<(std::path::PathBuf, mcp_cli::manifest::Scaffold)>, String> {
-    let versions = std::fs::read_dir(state_home.join("packages").join(name)).map_err(|error| format!("cannot list installed versions: {error}"))?;
-    let mut scaffolds = Vec::new();
-    for entry in versions {
-        let version = entry.map_err(|error| format!("cannot list installed versions: {error}"))?.file_name();
-        let version = version.to_string_lossy();
-        if let (source, Some(scaffold)) = installed_scaffold(state_home, name, &version).map_err(|error| format!("{name}@{version}: {error}"))? {
-            scaffolds.push((source, scaffold));
-        }
+/// The source snapshot and scaffold of every registered installed version of an MCP that ships one, loaded
+/// the first time they are asked for: only a file that may be a pre-record copy needs them. A version whose
+/// snapshot can't be read is left out with a warning, so a damaged old version never blocks the selected one.
+struct InstalledScaffolds<'a> {
+    state_home: &'a std::path::Path,
+    name: &'a str,
+    versions: Vec<String>,
+    loaded: std::cell::OnceCell<Vec<(std::path::PathBuf, mcp_cli::manifest::Scaffold)>>,
+}
+
+impl<'a> InstalledScaffolds<'a> {
+    fn new(state_home: &'a std::path::Path, name: &'a str, versions: Vec<String>) -> Self {
+        Self { state_home, name, versions, loaded: std::cell::OnceCell::new() }
     }
-    Ok(scaffolds)
+
+    /// No installed versions at all.
+    fn none() -> Self { Self::new(std::path::Path::new(""), "", Vec::new()) }
+
+    fn get(&self) -> &[(std::path::PathBuf, mcp_cli::manifest::Scaffold)] {
+        self.loaded.get_or_init(|| self.versions.iter().filter_map(|version| match installed_scaffold(self.state_home, self.name, version) {
+            Ok((source, scaffold)) => scaffold.map(|scaffold| (source, scaffold)),
+            Err(error) => {
+                eprintln!("warning: ignoring {}@{version} when looking for files it copied: {error}", self.name);
+                None
+            }
+        }).collect())
+    }
 }
 
 /// What is known about files already in a project when applying one MCP's scaffold.
@@ -681,7 +697,7 @@ struct KnownFiles<'a> {
     /// Paths recorded as copied by another MCP.
     claimed: &'a std::collections::BTreeSet<String>,
     /// The source snapshot and scaffold of every installed version of this MCP.
-    installed: &'a [(std::path::PathBuf, mcp_cli::manifest::Scaffold)],
+    installed: &'a InstalledScaffolds<'a>,
 }
 
 /// What applying a scaffold copied, and what it ships.
@@ -816,7 +832,7 @@ fn copy_scaffold_tree(source_root: &std::path::Path, target_root: &std::path::Pa
 fn unrecorded_installed_copy(destination: &std::path::Path, key: &str, known: &KnownFiles) -> std::io::Result<Option<String>> {
     if known.claimed.contains(key) || !std::fs::symlink_metadata(destination)?.file_type().is_file() { return Ok(None); }
     let mut candidates = Vec::new();
-    for (source, scaffold) in known.installed {
+    for (source, scaffold) in known.installed.get() {
         candidates.extend(scaffold_copy_source(source, scaffold, std::path::Path::new(key))?);
     }
     // With no installed version that copies a file here, the file is never read.
