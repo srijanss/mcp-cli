@@ -429,3 +429,28 @@ fn init_never_adopts_a_project_file_matching_a_source_file_an_installed_version_
     assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "the project's own");
     assert!(record(&project)["files"].get("docs/hooks.md").is_none(), "{}", record(&project));
 }
+
+#[test]
+fn init_adopts_an_unrecorded_file_an_earlier_version_copied_from_a_since_renamed_source() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    // 1.0.0 copies templates/old.md to docs/hooks.md; 1.1.0 copies templates/docs/hooks.md there instead.
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("old.md", "hooks v1")]);
+    let manifest = workspace.join("hooks-mcp/mcpctl.toml");
+    fs::write(&manifest, fs::read_to_string(&manifest).unwrap().replace("to = \"old.md\"", "to = \"docs/hooks.md\"")).unwrap();
+    let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    succeeded(&mcpctl(&project, &state_home, &["init"]));
+    fs::remove_file(project.join(".mcpctl.scaffold.json")).unwrap();
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+
+    let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+    assert!(stdout.contains("Updated docs/hooks.md"), "{stdout}");
+    assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "hooks v2");
+    assert_eq!(
+        record(&project)["files"]["docs/hooks.md"],
+        serde_json::json!({ "mcp": "hooks-mcp", "version": "1.1.0", "sha256": sha256("hooks v2") })
+    );
+}
