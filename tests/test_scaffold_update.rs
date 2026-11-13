@@ -719,3 +719,45 @@ fn a_shared_path_whose_owner_left_the_project_is_compared_with_the_recorded_copy
     assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "hooks v1");
     assert_eq!(record(&project)["files"]["docs/hooks.md"]["mcp"], "hooks-mcp");
 }
+
+#[test]
+fn a_shared_path_its_owner_stopped_shipping_is_compared_with_the_copy_the_owner_recorded() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    let project = project_with_late_second_shipper(&workspace, &state_home, "other v1");
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+
+    let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+    assert!(stdout.contains("Skipping docs/hooks.md (conflict: other-mcp@1.0.0 ships a different copy; keeping hooks-mcp@1.0.0's, which copied it first)"), "{stdout}");
+    assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "hooks v1");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_owners_copy_of_a_shared_path_is_warned_about_without_stopping_the_non_owners_other_files() {
+    use std::os::unix::fs::PermissionsExt;
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    project_with_late_second_shipper(&workspace, &state_home, "other v1");
+    write_package(&workspace, "other-mcp", "other-mcp", "1.0.1", &[("docs/hooks.md", "other v1"), ("docs/other.md", "other notes")]);
+    let project = write_project(&workspace, &[("other-mcp", "^1"), ("hooks-mcp", "^1")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    let owners_copy = state_home.join("packages/hooks-mcp/1.0.0/source/templates/docs/hooks.md");
+    fs::set_permissions(&owners_copy, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read(&owners_copy).is_ok() {
+        // Running with permission checks bypassed (e.g. as root): an unreadable file can't be made.
+        eprintln!("skipped: permission checks are bypassed for this user");
+        return;
+    }
+
+    let output = mcpctl(&project, &state_home, &["init"]);
+
+    fs::set_permissions(&owners_copy, fs::Permissions::from_mode(0o644)).unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("warning: cannot compare docs/hooks.md with hooks-mcp@1.0.0's copy"), "{stderr}");
+    assert_eq!(fs::read_to_string(project.join("docs/other.md")).ok().as_deref(), Some("other notes"), "stdout: {}\nstderr: {stderr}", String::from_utf8_lossy(&output.stdout));
+    assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "hooks v1");
+    assert_eq!(record(&project)["files"]["docs/hooks.md"]["mcp"], "hooks-mcp");
+}

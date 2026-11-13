@@ -738,20 +738,22 @@ impl<'a> SharedPaths<'a> {
         Self { claimed: Default::default(), selected: &NOTHING_SELECTED, this: String::new() }
     }
 
-    /// For a path another MCP owns: `name@version` of that owner when `source` (this MCP's copy) differs from
-    /// the owner's, or `None` when they match. The owner's copy is the one its selected version ships there,
+    /// For a path another MCP owns: `name@version` of the owner's copy that `source` (this MCP's copy) is
+    /// compared with, and whether the two differ. The owner's copy is the one its selected version ships there,
     /// or the one it recorded when it no longer ships it or isn't in the project. The record only ever names
     /// an owner: no snapshot is looked up from what it says.
-    fn differing_owner(&self, owner: &mcp_cli::scaffold_record::RecordedFile, key: &str, source: &std::path::Path) -> std::io::Result<Option<String>> {
-        let shipped = match self.selected.get(owner.mcp.as_str()) {
-            Some(&(version, root, scaffold)) => scaffold_copy_source(root, scaffold, std::path::Path::new(key))?.map(|file| (version, file)),
-            None => None,
+    fn compare_with_owner(&self, owner: &mcp_cli::scaffold_record::RecordedFile, key: &str, source: &std::path::Path) -> (String, std::io::Result<bool>) {
+        let differs_from = |owners_sha256: std::io::Result<String>| owners_sha256.and_then(|owners| Ok(mcp_cli::scaffold_copy::sha256_file(source)? != owners));
+        let recorded = || (owner.version.as_str(), differs_from(Ok(owner.sha256.clone())));
+        let (version, differs) = match self.selected.get(owner.mcp.as_str()) {
+            Some(&(version, root, scaffold)) => match scaffold_copy_source(root, scaffold, std::path::Path::new(key)) {
+                Ok(Some(file)) => (version, differs_from(mcp_cli::scaffold_copy::sha256_file(&file))),
+                Ok(None) => recorded(),
+                Err(error) => (version, Err(error)),
+            },
+            None => recorded(),
         };
-        let (version, owners_sha256) = match shipped {
-            Some((version, file)) => (version, mcp_cli::scaffold_copy::sha256_file(&file)?),
-            None => (owner.version.as_str(), owner.sha256.clone()),
-        };
-        Ok((mcp_cli::scaffold_copy::sha256_file(source)? != owners_sha256).then(|| format!("{}@{version}", owner.mcp)))
+        (format!("{}@{version}", owner.mcp), differs)
     }
 }
 
@@ -848,8 +850,11 @@ fn copy_scaffold_tree(source_root: &std::path::Path, target_root: &std::path::Pa
         copies.shipped.insert(key.clone());
         // A path another MCP copied first stays its own: never written, recreated or adopted by this one.
         if let Some(owner) = known.claimed.claimed.get(&key) {
-            if let Some(owner) = known.claimed.differing_owner(owner, &key, &source)? {
-                println!("Skipping {} (conflict: {} ships a different copy; keeping {owner}'s, which copied it first)", to.display(), known.claimed.this);
+            // Comparing the copies only decides what to report, so failing to doesn't stop this MCP's other files.
+            match known.claimed.compare_with_owner(owner, &key, &source) {
+                (owner, Ok(true)) => println!("Skipping {} (conflict: {} ships a different copy; keeping {owner}'s, which copied it first)", to.display(), known.claimed.this),
+                (_, Ok(false)) => {}
+                (owner, Err(error)) => eprintln!("warning: cannot compare {} with {owner}'s copy: {error}; keeping {owner}'s, which copied it first", to.display()),
             }
             return Ok(());
         }
