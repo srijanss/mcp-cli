@@ -179,3 +179,82 @@ fn init_leaves_a_recorded_file_the_project_replaced_with_a_dangling_symlink_alon
     assert!(fs::symlink_metadata(project.join("docs/hooks.md")).unwrap().file_type().is_symlink());
     assert_eq!(record(&project)["files"]["docs/hooks.md"]["version"], "1.0.0");
 }
+
+#[test]
+fn init_reports_an_unmodified_file_no_longer_shipped_as_safe_to_delete_and_stops_recording_it() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1"), ("docs/legacy.md", "legacy v1")]);
+    let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    succeeded(&mcpctl(&project, &state_home, &["init"]));
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+
+    let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+    assert!(stdout.contains("docs/legacy.md is no longer shipped by hooks-mcp@1.1.0 and is unchanged; it is safe to delete"), "{stdout}");
+    assert_eq!(fs::read_to_string(project.join("docs/legacy.md")).unwrap(), "legacy v1");
+    assert!(record(&project)["files"].get("docs/legacy.md").is_none(), "{}", record(&project));
+}
+
+#[test]
+fn init_keeps_a_locally_modified_file_no_longer_shipped_and_stops_recording_it() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1"), ("docs/legacy.md", "legacy v1")]);
+    let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    succeeded(&mcpctl(&project, &state_home, &["init"]));
+    fs::write(project.join("docs/legacy.md"), "legacy v1, edited").unwrap();
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+
+    let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+    assert!(stdout.contains("docs/legacy.md is no longer shipped by hooks-mcp@1.1.0 and is locally modified; keeping it"), "{stdout}");
+    assert!(!stdout.contains("safe to delete"), "{stdout}");
+    assert_eq!(fs::read_to_string(project.join("docs/legacy.md")).unwrap(), "legacy v1, edited");
+    assert!(record(&project)["files"].get("docs/legacy.md").is_none(), "{}", record(&project));
+}
+
+#[test]
+fn init_quietly_stops_recording_a_file_no_longer_shipped_that_the_project_already_deleted() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1"), ("docs/legacy.md", "legacy v1")]);
+    let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    succeeded(&mcpctl(&project, &state_home, &["init"]));
+    fs::remove_file(project.join("docs/legacy.md")).unwrap();
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+
+    let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+    assert!(!stdout.contains("docs/legacy.md"), "{stdout}");
+    assert!(!project.join("docs/legacy.md").exists());
+    assert!(record(&project)["files"].get("docs/legacy.md").is_none(), "{}", record(&project));
+}
+
+#[test]
+fn init_keeps_recording_files_when_the_new_scaffold_fails_before_it_has_seen_them_all() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1"), ("docs/legacy.md", "legacy v1")]);
+    let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    succeeded(&mcpctl(&project, &state_home, &["init"]));
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
+    let manifest = workspace.join("hooks-mcp/mcpctl.toml");
+    let failing_merge = "\n[[scaffold.files]]\nfrom = \"templates/mcp.json\"\nto = \"settings.json\"\nmerge = \"json\"\n";
+    fs::write(&manifest, fs::read_to_string(&manifest).unwrap() + failing_merge).unwrap();
+    fs::write(project.join("settings.json"), "not json").unwrap();
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+
+    let output = mcpctl(&project, &state_home, &["init"]);
+
+    assert!(!output.status.success(), "the failing merge fails init");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("no longer shipped"));
+    assert_eq!(record(&project)["files"]["docs/legacy.md"]["version"], "1.0.0");
+}
