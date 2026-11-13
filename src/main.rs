@@ -535,14 +535,19 @@ fn record_copied_files(record: &mut mcp_cli::scaffold_record::ScaffoldRecord, na
 fn forget_dropped_files(record: &mut mcp_cli::scaffold_record::ScaffoldRecord, root: &std::path::Path, name: &str, version: &str, owned: &mcp_cli::scaffold_record::ScaffoldRecord, shipped: &std::collections::BTreeSet<String>) -> Result<(), String> {
     for (path, entry) in owned.files.iter().filter(|(path, _)| !shipped.contains(*path)) {
         let file = root.join(path);
-        // A file the project already deleted needs no report; a symlink (dangling or not) is still there.
-        if let Ok(metadata) = std::fs::symlink_metadata(&file) {
-            let unchanged = metadata.file_type().is_file()
-                && mcp_cli::scaffold_copy::sha256_file(&file).map_err(|error| format!("cannot read {path}: {error}"))? == entry.sha256;
-            if unchanged {
-                println!("{path} is no longer shipped by {name}@{version} and is unchanged; it is safe to delete");
-            } else {
-                println!("{path} is no longer shipped by {name}@{version} and is locally modified; keeping it");
+        // A file the project already deleted needs no report; a symlink (dangling or not) is still there. Any
+        // other error leaves it unknown whether the file is there, so it stays recorded.
+        match std::fs::symlink_metadata(&file) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("cannot inspect {path}: {error}")),
+            Ok(metadata) => {
+                let unchanged = metadata.file_type().is_file()
+                    && mcp_cli::scaffold_copy::sha256_file(&file).map_err(|error| format!("cannot read {path}: {error}"))? == entry.sha256;
+                if unchanged {
+                    println!("{path} is no longer shipped by {name}@{version} and is unchanged; it is safe to delete");
+                } else {
+                    println!("{path} is no longer shipped by {name}@{version} and is locally modified; keeping it");
+                }
             }
         }
         record.files.remove(path);

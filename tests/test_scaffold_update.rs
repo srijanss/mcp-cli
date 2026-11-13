@@ -279,3 +279,30 @@ fn init_reports_every_recorded_file_when_a_new_version_drops_its_scaffold_entire
     assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "hooks v1");
     assert!(record(&project)["files"].get("docs/hooks.md").is_none(), "{}", record(&project));
 }
+
+#[cfg(unix)]
+#[test]
+fn init_fails_and_keeps_recording_a_file_no_longer_shipped_that_it_cannot_inspect() {
+    use std::os::unix::fs::PermissionsExt;
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.0.0", &[("docs/hooks.md", "hooks v1"), ("legacy/notes.md", "legacy v1")]);
+    let project = write_project(&workspace, &[("hooks-mcp", "^1")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    succeeded(&mcpctl(&project, &state_home, &["init"]));
+    write_package(&workspace, "hooks-mcp", "hooks-mcp", "1.1.0", &[("docs/hooks.md", "hooks v2")]);
+    succeeded(&mcpctl(&project, &state_home, &["sync"]));
+    // The file is still there, but init can't even tell whether it exists.
+    fs::set_permissions(project.join("legacy"), fs::Permissions::from_mode(0o000)).unwrap();
+
+    let output = mcpctl(&project, &state_home, &["init"]);
+
+    fs::set_permissions(project.join("legacy"), fs::Permissions::from_mode(0o755)).unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "stdout: {}", String::from_utf8_lossy(&output.stdout));
+    assert!(stderr.contains("hooks-mcp@1.1.0") && stderr.contains("legacy/notes.md"), "{stderr}");
+    assert_eq!(
+        record(&project)["files"]["legacy/notes.md"],
+        serde_json::json!({ "mcp": "hooks-mcp", "version": "1.0.0", "sha256": sha256("legacy v1") })
+    );
+}
