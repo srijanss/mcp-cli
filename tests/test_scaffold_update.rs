@@ -703,3 +703,19 @@ fn a_shared_path_owner_named_in_the_record_is_never_looked_up_outside_the_instal
     assert!(stdout.contains("Skipping docs/hooks.md (conflict: other-mcp@1.0.0 ships a different copy; keeping ../../planted@x's, which copied it first)"), "{stdout}");
     assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "hooks v1");
 }
+
+#[test]
+fn a_shared_path_whose_owner_left_the_project_is_compared_with_the_recorded_copy_not_the_owners_snapshot() {
+    let workspace = temporary_dir();
+    let state_home = workspace.join("state");
+    project_with_late_second_shipper(&workspace, &state_home, "other v1");
+    // hooks-mcp leaves the project; its installed snapshot now ships other-mcp's copy, unlike the one it recorded.
+    fs::write(state_home.join("packages/hooks-mcp/1.0.0/source/templates/docs/hooks.md"), "other v1").unwrap();
+    let project = write_project(&workspace, &[("other-mcp", "^1")]);
+
+    let stdout = succeeded(&mcpctl(&project, &state_home, &["init"]));
+
+    assert!(stdout.contains("Skipping docs/hooks.md (conflict: other-mcp@1.0.0 ships a different copy; keeping hooks-mcp@1.0.0's, which copied it first)"), "{stdout}");
+    assert_eq!(fs::read_to_string(project.join("docs/hooks.md")).unwrap(), "hooks v1");
+    assert_eq!(record(&project)["files"]["docs/hooks.md"]["mcp"], "hooks-mcp");
+}
